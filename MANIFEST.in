@@ -1,0 +1,22 @@
+# 包含额外文件的清单
+
+include README.md
+include LICENSE
+include CHANGELOG.md
+include requirements.txt
+include *.py
+
+recursive-include inkai *.py
+recursive-include inkai/utils *.py
+recursive-include inkai/core *.py  
+recursive-include inkai/agents *.py
+recursive-include inkai/managers *.py
+recursive-include inkai/system *.py
+
+# 排除不需要的文件
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude *~
+global-exclude .git*
+global-exclude .DS_Store
+global-exclude __pycache__
