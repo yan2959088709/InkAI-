@@ -144,11 +144,11 @@ graph TB
     L4 --> CORE
     CORE --> DATA
 
-    style L1 fill:#EFF6FF,stroke:#3B82F6,stroke-width:2px
-    style L2 fill:#EEF2FF,stroke:#6366F1,stroke-width:2px
-    style L3 fill:#F3E8FF,stroke:#8B5CF6,stroke-width:2px
-    style L4 fill:#FCE7F3,stroke:#EC4899,stroke-width:2px
-    style L5 fill:#ECFDF5,stroke:#10B981,stroke-width:2px
+    style L1 fill:#EFF6FF,stroke:#3B82F6,color:#1E293B,stroke-width:2px
+    style L2 fill:#EEF2FF,stroke:#6366F1,color:#1E293B,stroke-width:2px
+    style L3 fill:#F3E8FF,stroke:#8B5CF6,color:#1E293B,stroke-width:2px
+    style L4 fill:#FCE7F3,stroke:#EC4899,color:#1E293B,stroke-width:2px
+    style L5 fill:#ECFDF5,stroke:#10B981,color:#1E293B,stroke-width:2px
 ```
 
 ---
