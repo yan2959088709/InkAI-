@@ -5,6 +5,17 @@
 from base_agent import BaseAgent
 from typing import Dict, List, Any
 import config
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.type_safety import (
+    safe_list_extend, safe_list_append, safe_dict_update, 
+    ensure_field_type, validate_character_structure, 
+    create_safe_defaults, log_type_mismatch
+)
+from utils.logger import get_logger
+
+logger = get_logger("character_creator")
 
 
 class CharacterCreatorAgent(BaseAgent):
@@ -205,7 +216,7 @@ class CharacterCreatorAgent(BaseAgent):
         
         # 【关键兜底】检查并尝试从 'content' 中恢复数据
         if result.get('parse_error', False):
-            print("⚠️ JSON解析失败，尝试从 'content' 字段恢复...")
+            logger.error("⚠️ JSON解析失败，尝试从 'content' 字段恢复...")
             # 尝试从 'content' 中提取纯JSON字符串并重新解析
             raw_content = result.get('content', '')
             # 移除可能存在的 ```json ``` 标记
@@ -217,10 +228,10 @@ class CharacterCreatorAgent(BaseAgent):
                     # 再次尝试解析
                     second_attempt = self.parse_json_response(clean_json_str)
                     if not second_attempt.get('parse_error', False):
-                        print("✅ 从 'content' 中成功恢复结构化数据")
+                        logger.info("✅ 从 'content' 中成功恢复结构化数据")
                         result = second_attempt
                     else:
-                        print("❌ 二次解析仍然失败，返回空结构")
+                        logger.error("❌ 二次解析仍然失败，返回空结构")
                         return self._get_empty_character_structure()
         
         # 验证和补充人物信息
@@ -228,15 +239,32 @@ class CharacterCreatorAgent(BaseAgent):
     
     def _create_supporting_characters(self, tags: Dict[str, List[str]], main_character: Dict[str, Any]) -> List[Dict[str, Any]]:
         """创建次要人物"""
-        # 根据故事类型确定需要的次要人物
-        character_roles = self._determine_supporting_roles(tags)
-        
-        supporting_characters = []
-        for role in character_roles:
-            character = self._create_single_supporting_character(role, main_character, tags)
-            supporting_characters.append(character)
-        
-        return supporting_characters
+        try:
+            # 根据故事类型确定需要的次要人物
+            character_roles = self._determine_supporting_roles(tags)
+            
+            # 确保character_roles是列表
+            if not isinstance(character_roles, list):
+                character_roles = []
+                self.log("character_roles不是列表类型，已重置为空列表")
+            
+            supporting_characters = []
+            for role in character_roles:
+                if isinstance(role, str):
+                    character = self._create_single_supporting_character(role, main_character, tags)
+                    if isinstance(character, dict):
+                        # 使用安全的添加方法
+                        supporting_characters = safe_list_append(
+                            supporting_characters, 
+                            character, 
+                            "supporting_characters"
+                        )
+            
+            return supporting_characters
+            
+        except Exception as e:
+            self.log(f"创建次要人物时出错: {e}")
+            return []
     
     def _create_single_supporting_character(self, role: str, main_character: Dict[str, Any], tags: Dict[str, List[str]]) -> Dict[str, Any]:
         """创建单个次要人物"""
@@ -306,19 +334,39 @@ class CharacterCreatorAgent(BaseAgent):
     
     def _define_relationships(self, main_character: Dict[str, Any], supporting_characters: List[Dict[str, Any]]) -> Dict[str, Any]:
         """定义人物关系"""
-        relationships = {
-            "main_character": main_character.get("basic_info", {}).get("name", "主角"),
-            "relationships": []
-        }
-        
-        for char in supporting_characters:
-            relationships["relationships"].append({
-                "character": char.get("basic_info", {}).get("name", "未知"),
-                "role": char.get("role", "未知"),
-                "relationship_type": char.get("relationship_with_main", "未知")
-            })
-        
-        return relationships
+        try:
+            # 确保supporting_characters是列表
+            if not isinstance(supporting_characters, list):
+                supporting_characters = []
+                self.log("supporting_characters不是列表类型，已重置为空列表")
+            
+            relationships = {
+                "main_character": main_character.get("basic_info", {}).get("name", "主角"),
+                "relationships": []
+            }
+            
+            for char in supporting_characters:
+                if isinstance(char, dict):
+                    relationship_item = {
+                        "character": char.get("basic_info", {}).get("name", "未知"),
+                        "role": char.get("role", "未知"),
+                        "relationship_type": char.get("relationship_with_main", "未知")
+                    }
+                    # 使用安全的添加方法
+                    relationships["relationships"] = safe_list_append(
+                        relationships["relationships"], 
+                        relationship_item, 
+                        "relationships"
+                    )
+            
+            return relationships
+            
+        except Exception as e:
+            self.log(f"定义角色关系时出错: {e}")
+            return {
+                "main_character": "主角",
+                "relationships": []
+            }
     
     def _format_tags(self, tags: Dict[str, List[str]]) -> str:
         """格式化标签信息"""
@@ -356,28 +404,28 @@ class CharacterCreatorAgent(BaseAgent):
     
     def _validate_character(self, character: Dict[str, Any], character_type: str) -> Dict[str, Any]:
         """验证和补充人物信息"""
-        
-        # 确保必要字段存在
-        if "basic_info" not in character:
-            character["basic_info"] = {}
-        
-        if "personality" not in character:
-            character["personality"] = {}
-        
-        if "appearance" not in character:
-            character["appearance"] = {}
-        
-        if "background" not in character:
-            character["background"] = {}
-        
-        # 补充原型特征
-        if character_type in config.CHARACTER_ARCHETYPES:
-            archetype = config.CHARACTER_ARCHETYPES[character_type]
-            if "skills" not in character:
-                character["skills"] = []
-            character["skills"].extend(archetype["traits"])
-        
-        return character
+        try:
+            # 使用类型安全工具验证和修复角色结构
+            character = validate_character_structure(character)
+            
+            # 补充原型特征（使用类型安全的扩展方法）
+            if character_type in config.CHARACTER_ARCHETYPES:
+                archetype = config.CHARACTER_ARCHETYPES[character_type]
+                archetype_traits = archetype.get("traits", [])
+                
+                # 使用安全的扩展方法
+                character["skills"] = safe_list_extend(
+                    character.get("skills", []), 
+                    archetype_traits, 
+                    "skills"
+                )
+            
+            return character
+            
+        except Exception as e:
+            self.log(f"验证角色数据时出错: {e}")
+            # 返回安全的默认结构
+            return create_safe_defaults("character_creator")["main_character"]
     
     def _improve_existing_characters(self, existing_characters: Dict[str, Any], 
                                    user_modifications: Dict[str, Any], 
@@ -539,29 +587,21 @@ class CharacterCreatorAgent(BaseAgent):
     
     def _validate_improved_characters(self, result: Dict[str, Any], original_characters: Dict[str, Any]) -> Dict[str, Any]:
         """验证改进后的人物设定"""
-        # 确保必要字段存在
-        if "main_character" not in result:
-            result["main_character"] = original_characters.get("main_character", {})
-        
-        if "supporting_characters" not in result:
-            result["supporting_characters"] = original_characters.get("supporting_characters", [])
-        
-        if "character_relationships" not in result:
-            result["character_relationships"] = original_characters.get("character_relationships", {})
-        
-        # 确保主角基本信息完整
-        main_char = result["main_character"]
-        if "basic_info" not in main_char:
-            main_char["basic_info"] = {}
-        if "personality" not in main_char:
-            main_char["personality"] = {}
-        if "appearance" not in main_char:
-            main_char["appearance"] = {}
-        if "background" not in main_char:
-            main_char["background"] = {}
-        if "skills" not in main_char:
-            main_char["skills"] = []
-        if "relationships" not in main_char:
-            main_char["relationships"] = {}
-        
-        return result
+        try:
+            # 使用类型安全工具确保字段存在且类型正确
+            result = ensure_field_type(result, "main_character", dict, original_characters.get("main_character", {}))
+            result = ensure_field_type(result, "supporting_characters", list, original_characters.get("supporting_characters", []))
+            result = ensure_field_type(result, "character_relationships", dict, original_characters.get("character_relationships", {}))
+            
+            # 验证主角数据结构
+            main_char = result["main_character"]
+            if isinstance(main_char, dict):
+                main_char = validate_character_structure(main_char)
+                result["main_character"] = main_char
+            
+            return result
+            
+        except Exception as e:
+            self.log(f"验证改进后角色数据时出错: {e}")
+            # 返回安全的默认结构
+            return create_safe_defaults("character_creator")

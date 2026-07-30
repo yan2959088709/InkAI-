@@ -8,6 +8,8 @@ import time
 import threading
 from typing import Dict, List, Any, Optional, Union
 from datetime import datetime
+from utils.logger import get_logger
+logger = get_logger("batch_processor")
 
 
 class BatchProcessor:
@@ -38,7 +40,7 @@ class BatchProcessor:
                     return request_id
                     
         except Exception as e:
-            print(f"添加LLM请求失败: {e}")
+            logger.error(f"添加LLM请求失败: {e}")
             return ""
     
     def _process_batch(self) -> str:
@@ -65,7 +67,7 @@ class BatchProcessor:
             return batch_result.get("batch_id", "")
             
         except Exception as e:
-            print(f"处理批量请求失败: {e}")
+            logger.error(f"处理批量请求失败: {e}")
             return ""
     
     def _execute_batch_requests(self, requests: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -90,7 +92,7 @@ class BatchProcessor:
             }
             
         except Exception as e:
-            print(f"执行批量请求失败: {e}")
+            logger.error(f"执行批量请求失败: {e}")
             return {"error": str(e)}
     
     def _build_batch_request(self, requests: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -113,7 +115,7 @@ class BatchProcessor:
             return batch_request
             
         except Exception as e:
-            print(f"构建批量请求失败: {e}")
+            logger.error(f"构建批量请求失败: {e}")
             return {}
     
     def _call_batch_llm(self, batch_request: Dict[str, Any]) -> Dict[str, Any]:
@@ -145,7 +147,7 @@ class BatchProcessor:
             }
             
         except Exception as e:
-            print(f"调用批量LLM失败: {e}")
+            logger.error(f"调用批量LLM失败: {e}")
             return {"error": str(e)}
     
     def _parse_batch_response(self, batch_response: Dict[str, Any], 
@@ -165,7 +167,7 @@ class BatchProcessor:
             return individual_responses
             
         except Exception as e:
-            print(f"解析批量响应失败: {e}")
+            logger.error(f"解析批量响应失败: {e}")
             return {}
     
     def get_pending_requests_count(self) -> int:
@@ -215,7 +217,7 @@ class LLMRequestBatcher:
             return request_id
             
         except Exception as e:
-            print(f"提交LLM请求失败: {e}")
+            logger.error(f"提交LLM请求失败: {e}")
             return ""
     
     def get_response(self, request_id: str) -> Optional[Dict[str, Any]]:
@@ -230,7 +232,7 @@ class LLMRequestBatcher:
             }
             
         except Exception as e:
-            print(f"获取响应失败: {e}")
+            logger.error(f"获取响应失败: {e}")
             return None
     
     def wait_for_response(self, request_id: str, timeout: float = 30.0) -> Optional[Dict[str, Any]]:
@@ -246,7 +248,7 @@ class LLMRequestBatcher:
             return None
             
         except Exception as e:
-            print(f"等待响应失败: {e}")
+            logger.error(f"等待响应失败: {e}")
             return None
     
     def submit_batch_requests(self, requests: List[Dict[str, Any]]) -> List[str]:
@@ -264,7 +266,7 @@ class LLMRequestBatcher:
             return request_ids
             
         except Exception as e:
-            print(f"提交批量请求失败: {e}")
+            logger.error(f"提交批量请求失败: {e}")
             return []
     
     def get_batch_responses(self, request_ids: List[str]) -> Dict[str, Any]:
@@ -279,7 +281,7 @@ class LLMRequestBatcher:
             return responses
             
         except Exception as e:
-            print(f"获取批量响应失败: {e}")
+            logger.error(f"获取批量响应失败: {e}")
             return {}
     
     def wait_for_batch_responses(self, request_ids: List[str], 
@@ -304,5 +306,5 @@ class LLMRequestBatcher:
             return responses
             
         except Exception as e:
-            print(f"等待批量响应失败: {e}")
+            logger.error(f"等待批量响应失败: {e}")
             return {}

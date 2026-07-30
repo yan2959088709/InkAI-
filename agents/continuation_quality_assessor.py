@@ -6,6 +6,8 @@
 from base_agent import BaseAgent
 from typing import Dict, List, Any, Optional
 import config
+from utils.logger import get_logger
+logger = get_logger("continuation_quality_assessor")
 
 
 class ContinuationQualityAssessor(BaseAgent):
@@ -300,11 +302,11 @@ class ContinuationQualityAssessor(BaseAgent):
         
         # 检查LLM输出格式并转换
         if "evaluation" in result and isinstance(result["evaluation"], dict):
-            print("🔧 检测到LLM嵌套格式，开始转换...")
+            logger.info("🔧 检测到LLM嵌套格式，开始转换...")
             evaluation = result["evaluation"]
             result = self._convert_llm_evaluation_format(evaluation)
         elif self._is_direct_llm_format(result):
-            print("🔧 检测到LLM直接格式，开始转换...")
+            logger.info("🔧 检测到LLM直接格式，开始转换...")
             result = self._convert_direct_llm_format(result)
         
         # 确保必要字段存在（兜底逻辑）
@@ -330,7 +332,7 @@ class ContinuationQualityAssessor(BaseAgent):
         # 确保分数在合理范围内
         result["overall_score"] = max(0, min(100, result["overall_score"]))
         
-        print(f"✅ 最终评估结果: 总分{result['overall_score']}, 建议{len(result['suggestions'])}条, 维度{len(result['dimensions'])}个")
+        logger.info(f"✅ 最终评估结果: 总分{result['overall_score']}, 建议{len(result['suggestions'])}条, 维度{len(result['dimensions'])}个")
         
         return result
     
@@ -344,7 +346,7 @@ class ContinuationQualityAssessor(BaseAgent):
             if field in evaluation and isinstance(evaluation[field], (int, float)):
                 base_score = evaluation[field]
                 converted_result["overall_score"] = int(base_score * 10)  # 0-10 -> 0-100
-                print(f"✅ 转换总分: {base_score} -> {converted_result['overall_score']}")
+                logger.info(f"✅ 转换总分: {base_score} -> {converted_result['overall_score']}")
                 break
         
         # 如果没有找到合适的总分，计算平均分
@@ -358,7 +360,7 @@ class ContinuationQualityAssessor(BaseAgent):
             if scores:
                 avg_score = sum(scores) / len(scores)
                 converted_result["overall_score"] = int(avg_score * 10)
-                print(f"✅ 计算平均分: {avg_score} -> {converted_result['overall_score']}")
+                logger.info(f"✅ 计算平均分: {avg_score} -> {converted_result['overall_score']}")
             else:
                 converted_result["overall_score"] = 75
         
@@ -387,22 +389,22 @@ class ContinuationQualityAssessor(BaseAgent):
                 if isinstance(value, (int, float)):
                     score = int(value * 10) if value <= 10 else int(value)
                     dimensions[system_field] = score
-                    print(f"  ✅ {llm_field} ({value}) -> {system_field} ({score})")
+                    logger.info(f"  ✅ {llm_field} ({value}) -> {system_field} ({score})")
                 # 处理文字评级
                 elif isinstance(value, str):
                     score_map = {"优秀": 90, "良好": 80, "一般": 70, "较差": 60, "不合格": 50}
                     score = score_map.get(value, 75)
                     dimensions[system_field] = score
-                    print(f"  ✅ {llm_field} ('{value}') -> {system_field} ({score})")
+                    logger.info(f"  ✅ {llm_field} ('{value}') -> {system_field} ({score})")
                 else:
-                    print(f"  ⚠️ {llm_field}: 未知类型 {type(value)}")
+                    logger.info(f"  ⚠️ {llm_field}: 未知类型 {type(value)}")
         
         converted_result["dimensions"] = dimensions
-        print(f"✅ 转换维度评分: {len(dimensions)}个维度")
+        logger.info(f"✅ 转换维度评分: {len(dimensions)}个维度")
         
         # 3. 提取建议
         converted_result["suggestions"] = evaluation.get("suggestions", [])
-        print(f"✅ 提取建议: {len(converted_result['suggestions'])}条")
+        logger.info(f"✅ 提取建议: {len(converted_result['suggestions'])}条")
         
         # 4. 构建详细分析
         detailed_analysis = {}
@@ -412,7 +414,7 @@ class ContinuationQualityAssessor(BaseAgent):
                 detailed_analysis[field] = evaluation[field]
         
         converted_result["detailed_analysis"] = detailed_analysis
-        print(f"✅ 构建详细分析: {len(detailed_analysis)}个字段")
+        logger.info(f"✅ 构建详细分析: {len(detailed_analysis)}个字段")
         
         return converted_result
     
@@ -432,10 +434,10 @@ class ContinuationQualityAssessor(BaseAgent):
             score = result["score"]
             if score <= 10:
                 converted_result["overall_score"] = int(score * 10)
-                print(f"✅ 转换总分(0-10制): {score} -> {converted_result['overall_score']}")
+                logger.info(f"✅ 转换总分(0-10制): {score} -> {converted_result['overall_score']}")
             else:
                 converted_result["overall_score"] = int(score)
-                print(f"✅ 使用总分(0-100制): {score}")
+                logger.info(f"✅ 使用总分(0-100制): {score}")
         else:
             # 尝试从各维度计算平均分
             score_fields = ["plot_consistency", "character_consistency", "setting_consistency", "tone_consistency"]
@@ -451,10 +453,10 @@ class ContinuationQualityAssessor(BaseAgent):
             
             if scores:
                 converted_result["overall_score"] = int(sum(scores) / len(scores))
-                print(f"✅ 计算平均分: {scores} -> {converted_result['overall_score']}")
+                logger.info(f"✅ 计算平均分: {scores} -> {converted_result['overall_score']}")
             else:
                 converted_result["overall_score"] = 75
-                print("⚠️ 无法找到评分字段，使用默认75分")
+                logger.info("⚠️ 无法找到评分字段，使用默认75分")
         
         # 2. 转换维度评分
         dimensions = {}
@@ -475,7 +477,7 @@ class ContinuationQualityAssessor(BaseAgent):
                     dimensions[system_field] = int(score)
         
         converted_result["dimensions"] = dimensions
-        print(f"✅ 转换维度评分: {len(dimensions)}个维度")
+        logger.info(f"✅ 转换维度评分: {len(dimensions)}个维度")
         
         # 3. 转换建议
         suggestions = []
@@ -488,7 +490,7 @@ class ContinuationQualityAssessor(BaseAgent):
             suggestions = []
         
         converted_result["suggestions"] = suggestions
-        print(f"✅ 提取建议: {len(suggestions)}条")
+        logger.info(f"✅ 提取建议: {len(suggestions)}条")
         
         # 4. 构建详细分析
         detailed_analysis = {}
@@ -498,7 +500,7 @@ class ContinuationQualityAssessor(BaseAgent):
                 detailed_analysis[field] = result[field]
         
         converted_result["detailed_analysis"] = detailed_analysis
-        print(f"✅ 构建详细分析: {len(detailed_analysis)}个字段")
+        logger.info(f"✅ 构建详细分析: {len(detailed_analysis)}个字段")
         
         return converted_result
     

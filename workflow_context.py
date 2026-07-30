@@ -1,10 +1,28 @@
 """
-工作流程上下文管理器
-统一管理所有智能体的数据传递和状态同步
+[DEPRECATED] 工作流程上下文管理器（旧流水线遗留）
+
+⚠ 本模块属于 InkAI 旧版状态机式 workflow（inkai_workflow_optimized.py）的产物，
+   已被新流水线完全取代——新流水线通过磁盘文件（metadata/characters/storyline/
+   blueprint/volume_chapters/chapters_demo）做状态传递，无需中间状态对象。
+   - 新代码请勿 import 本模块；保留它仅为兼容历史 novel_dir 中残留的
+     workflow_context.json 文件不被误读。
+
+详见：docs/development/data_files_catalog.md
 """
+import warnings as _warnings
+_warnings.warn(
+    "workflow_context 已废弃；新流水线通过磁盘文件直接做状态传递。"
+    "详见 docs/development/data_files_catalog.md",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 import json
+from utils.logger import get_logger
+
+logger = get_logger("workflow_context")
 
 
 class WorkflowContext:
@@ -239,7 +257,7 @@ class WorkflowContext:
                 json.dump(self.to_dict(), f, ensure_ascii=False, indent=2)
             return True
         except Exception as e:
-            print(f"保存上下文失败: {e}")
+            logger.error(f"保存上下文失败: {e}")
             return False
     
     @classmethod
@@ -250,7 +268,7 @@ class WorkflowContext:
                 data = json.load(f)
             return cls.from_dict(data)
         except Exception as e:
-            print(f"加载上下文失败: {e}")
+            logger.error(f"加载上下文失败: {e}")
             return None
     
     def validate_context(self) -> Dict[str, Any]:
@@ -372,7 +390,7 @@ class WorkflowContext:
             return True
             
         except Exception as e:
-            print(f"保存上下文失败: {e}")
+            logger.error(f"保存上下文失败: {e}")
             return False
     
     def load_context(self, novel_id: str) -> bool:
@@ -414,5 +432,5 @@ class WorkflowContext:
             return True
             
         except Exception as e:
-            print(f"加载上下文失败: {e}")
+            logger.error(f"加载上下文失败: {e}")
             return False

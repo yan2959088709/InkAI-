@@ -1,12 +1,28 @@
 """
-核心知识管理器
-负责管理小说的核心知识，包括人物基础档案、世界观设定、故事主题等
+[DEPRECATED] 核心知识管理器（旧流水线遗留）
+
+⚠ 本模块属于 InkAI 旧版状态机式 workflow（inkai_workflow_optimized.py）的产物，
+   已被新流水线（run_init_novel/run_outline_demo/run_chapter_demo）完全取代。
+   - 旧"核心知识"已被 characters.json + storyline.json 直接承载
+   - 新代码请勿 import 本模块；保留它仅为兼容历史 novel_dir 中残留的
+     core_knowledge.json 文件不被误读。
+
+详见：docs/development/data_files_catalog.md
 """
+import warnings as _warnings
+_warnings.warn(
+    "core.core_knowledge_manager 已废弃；新流水线请使用 characters.json + storyline.json。"
+    "详见 docs/development/data_files_catalog.md",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 from typing import Dict, List, Any, Optional
 import json
 import os
 from datetime import datetime
+from utils.logger import get_logger
+logger = get_logger("core_knowledge_manager")
 
 
 class CoreKnowledgeManager:
@@ -47,7 +63,7 @@ class CoreKnowledgeManager:
             return core_knowledge
             
         except Exception as e:
-            print(f"初始化核心知识失败: {e}")
+            logger.error(f"初始化核心知识失败: {e}")
             return {}
     
     def get_core_knowledge(self, novel_id: str) -> Dict[str, Any]:
@@ -86,7 +102,7 @@ class CoreKnowledgeManager:
             return True
             
         except Exception as e:
-            print(f"更新核心知识失败: {e}")
+            logger.error(f"更新核心知识失败: {e}")
             return False
     
     def _extract_character_profiles(self, novel_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -187,7 +203,7 @@ class CoreKnowledgeManager:
             return True
             
         except Exception as e:
-            print(f"保存核心知识失败: {e}")
+            logger.error(f"保存核心知识失败: {e}")
             return False
     
     def _load_core_knowledge(self, novel_id: str) -> Optional[Dict[str, Any]]:
@@ -208,7 +224,7 @@ class CoreKnowledgeManager:
             return None
             
         except Exception as e:
-            print(f"加载核心知识失败: {e}")
+            logger.error(f"加载核心知识失败: {e}")
             return None
     
     def clear_cache(self, novel_id: str = None):

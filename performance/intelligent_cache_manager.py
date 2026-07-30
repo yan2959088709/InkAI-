@@ -10,6 +10,9 @@ import hashlib
 from typing import Dict, List, Any, Optional, Union
 from datetime import datetime, timedelta
 import threading
+from utils.logger import get_logger
+
+logger = get_logger("intelligent_cache_manager")
 
 
 class IntelligentCacheManager:
@@ -31,11 +34,11 @@ class IntelligentCacheManager:
         try:
             os.makedirs(cache_dir, exist_ok=True)
         except Exception as e:
-            print(f"创建缓存目录失败: {e}")
+            logger.error(f"创建缓存目录失败: {e}")
             # 使用临时目录作为备选
             import tempfile
             self.cache_dir = tempfile.mkdtemp()
-            print(f"使用临时缓存目录: {self.cache_dir}")
+            logger.info(f"使用临时缓存目录: {self.cache_dir}")
     
     def get_cache_key(self, data: Dict[str, Any]) -> str:
         """生成缓存键"""
@@ -74,7 +77,7 @@ class IntelligentCacheManager:
                 return None
                 
         except Exception as e:
-            print(f"获取评估缓存失败: {e}")
+            logger.error(f"获取评估缓存失败: {e}")
             return None
     
     def set_assessment_cache(self, cache_key: str, data: Dict[str, Any], 
@@ -103,7 +106,7 @@ class IntelligentCacheManager:
                 return True
                 
         except Exception as e:
-            print(f"设置评估缓存失败: {e}")
+            logger.error(f"设置评估缓存失败: {e}")
             return False
     
     def get_improvement_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:
@@ -134,7 +137,7 @@ class IntelligentCacheManager:
                 return None
                 
         except Exception as e:
-            print(f"获取改进缓存失败: {e}")
+            logger.error(f"获取改进缓存失败: {e}")
             return None
     
     def set_improvement_cache(self, cache_key: str, data: Dict[str, Any], 
@@ -163,7 +166,7 @@ class IntelligentCacheManager:
                 return True
                 
         except Exception as e:
-            print(f"设置改进缓存失败: {e}")
+            logger.error(f"设置改进缓存失败: {e}")
             return False
     
     def get_context_cache(self, novel_id: str, chapter_number: int) -> Optional[Dict[str, Any]]:
@@ -195,7 +198,7 @@ class IntelligentCacheManager:
                 return None
                 
         except Exception as e:
-            print(f"获取上下文缓存失败: {e}")
+            logger.error(f"获取上下文缓存失败: {e}")
             return None
     
     def set_context_cache(self, novel_id: str, chapter_number: int, 
@@ -222,7 +225,7 @@ class IntelligentCacheManager:
                 return True
                 
         except Exception as e:
-            print(f"设置上下文缓存失败: {e}")
+            logger.error(f"设置上下文缓存失败: {e}")
             return False
     
     def get_llm_response_cache(self, messages: List[Dict[str, str]]) -> Optional[str]:
@@ -254,7 +257,7 @@ class IntelligentCacheManager:
                 return None
                 
         except Exception as e:
-            print(f"获取LLM响应缓存失败: {e}")
+            logger.error(f"获取LLM响应缓存失败: {e}")
             return None
     
     def set_llm_response_cache(self, messages: List[Dict[str, str]], 
@@ -281,7 +284,7 @@ class IntelligentCacheManager:
                 return True
                 
         except Exception as e:
-            print(f"设置LLM响应缓存失败: {e}")
+            logger.error(f"设置LLM响应缓存失败: {e}")
             return False
     
     def _is_cache_valid(self, cache_data: Dict[str, Any]) -> bool:
@@ -311,7 +314,7 @@ class IntelligentCacheManager:
                     self.cache_stats["evictions"] += 1
                     
         except Exception as e:
-            print(f"执行缓存大小限制失败: {e}")
+            logger.error(f"执行缓存大小限制失败: {e}")
     
     def clear_cache(self, cache_type: str = None):
         """清理缓存"""
@@ -340,7 +343,7 @@ class IntelligentCacheManager:
                             os.remove(os.path.join(self.cache_dir, filename))
                             
         except Exception as e:
-            print(f"清理缓存失败: {e}")
+            logger.error(f"清理缓存失败: {e}")
     
     def get_cache_stats(self) -> Dict[str, Any]:
         """获取缓存统计信息"""
@@ -372,4 +375,4 @@ class IntelligentCacheManager:
                     del self.memory_cache[key]
                     
         except Exception as e:
-            print(f"清理过期缓存失败: {e}")
+            logger.error(f"清理过期缓存失败: {e}")

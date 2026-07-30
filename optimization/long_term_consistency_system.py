@@ -9,6 +9,8 @@ import os
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
 import threading
+from utils.logger import get_logger
+logger = get_logger("long_term_consistency_system")
 
 
 class LongTermConsistencySystem:
@@ -46,7 +48,7 @@ class LongTermConsistencySystem:
             return True
             
         except Exception as e:
-            print(f"初始化一致性规则失败: {e}")
+            logger.error(f"初始化一致性规则失败: {e}")
             return False
     
     def check_character_consistency(self, novel_id: str, chapter_content: Dict[str, Any]) -> Dict[str, Any]:
@@ -83,7 +85,7 @@ class LongTermConsistencySystem:
             }
             
         except Exception as e:
-            print(f"检查人物一致性失败: {e}")
+            logger.error(f"检查人物一致性失败: {e}")
             return {"consistent": False, "issues": [f"检查过程出错: {str(e)}"]}
     
     def check_world_consistency(self, novel_id: str, chapter_content: Dict[str, Any]) -> Dict[str, Any]:
@@ -120,7 +122,7 @@ class LongTermConsistencySystem:
             }
             
         except Exception as e:
-            print(f"检查世界观一致性失败: {e}")
+            logger.error(f"检查世界观一致性失败: {e}")
             return {"consistent": False, "issues": [f"检查过程出错: {str(e)}"]}
     
     def check_plot_consistency(self, novel_id: str, chapter_content: Dict[str, Any]) -> Dict[str, Any]:
@@ -157,7 +159,7 @@ class LongTermConsistencySystem:
             }
             
         except Exception as e:
-            print(f"检查情节一致性失败: {e}")
+            logger.error(f"检查情节一致性失败: {e}")
             return {"consistent": False, "issues": [f"检查过程出错: {str(e)}"]}
     
     def check_style_consistency(self, novel_id: str, chapter_content: Dict[str, Any]) -> Dict[str, Any]:
@@ -194,7 +196,7 @@ class LongTermConsistencySystem:
             }
             
         except Exception as e:
-            print(f"检查风格一致性失败: {e}")
+            logger.error(f"检查风格一致性失败: {e}")
             return {"consistent": False, "issues": [f"检查过程出错: {str(e)}"]}
     
     def check_theme_consistency(self, novel_id: str, chapter_content: Dict[str, Any]) -> Dict[str, Any]:
@@ -231,7 +233,7 @@ class LongTermConsistencySystem:
             }
             
         except Exception as e:
-            print(f"检查主题一致性失败: {e}")
+            logger.error(f"检查主题一致性失败: {e}")
             return {"consistent": False, "issues": [f"检查过程出错: {str(e)}"]}
     
     def comprehensive_consistency_check(self, novel_id: str, chapter_content: Dict[str, Any]) -> Dict[str, Any]:
@@ -285,7 +287,7 @@ class LongTermConsistencySystem:
             }
             
         except Exception as e:
-            print(f"综合一致性检查失败: {e}")
+            logger.error(f"综合一致性检查失败: {e}")
             return {"consistent": False, "issues": [f"检查过程出错: {str(e)}"]}
     
     def _extract_character_rules(self, novel_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -314,7 +316,7 @@ class LongTermConsistencySystem:
                 "relationships": characters.get("character_relationships", {})
             }
         except Exception as e:
-            print(f"提取人物规则失败: {e}")
+            logger.error(f"提取人物规则失败: {e}")
             return {}
     
     def _extract_world_rules(self, novel_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -331,7 +333,7 @@ class LongTermConsistencySystem:
                 "cultural": world_setting.get("cultural", {})
             }
         except Exception as e:
-            print(f"提取世界观规则失败: {e}")
+            logger.error(f"提取世界观规则失败: {e}")
             return {}
     
     def _extract_plot_rules(self, novel_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -347,7 +349,7 @@ class LongTermConsistencySystem:
                 "plot_structure": overall_storyline.get("plot_structure", {})
             }
         except Exception as e:
-            print(f"提取情节规则失败: {e}")
+            logger.error(f"提取情节规则失败: {e}")
             return {}
     
     def _extract_style_rules(self, novel_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -362,7 +364,7 @@ class LongTermConsistencySystem:
                 "writing_style": metadata.get("writing_style", "")
             }
         except Exception as e:
-            print(f"提取风格规则失败: {e}")
+            logger.error(f"提取风格规则失败: {e}")
             return {}
     
     def _extract_theme_rules(self, novel_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -377,7 +379,7 @@ class LongTermConsistencySystem:
                 "theme_development": overall_storyline.get("theme_development", {})
             }
         except Exception as e:
-            print(f"提取主题规则失败: {e}")
+            logger.error(f"提取主题规则失败: {e}")
             return {}
     
     def _calculate_consistency_score(self, *checks) -> float:
@@ -405,7 +407,7 @@ class LongTermConsistencySystem:
             return total_score / valid_checks if valid_checks > 0 else 0
             
         except Exception as e:
-            print(f"计算一致性分数失败: {e}")
+            logger.error(f"计算一致性分数失败: {e}")
             return 0
     
     def _record_consistency_check(self, novel_id: str, check_result: Dict[str, Any]):
@@ -423,7 +425,7 @@ class LongTermConsistencySystem:
                     self.consistency_history = self.consistency_history[-1000:]
                     
         except Exception as e:
-            print(f"记录一致性检查失败: {e}")
+            logger.error(f"记录一致性检查失败: {e}")
     
     def _save_consistency_rules(self, novel_id: str, rules: Dict[str, Any]) -> bool:
         """保存一致性规则"""
@@ -445,7 +447,7 @@ class LongTermConsistencySystem:
             return True
             
         except Exception as e:
-            print(f"保存一致性规则失败: {e}")
+            logger.error(f"保存一致性规则失败: {e}")
             return False
     
     def _get_character_rules(self, novel_id: str) -> Dict[str, Any]:

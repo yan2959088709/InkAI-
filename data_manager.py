@@ -8,6 +8,10 @@ import uuid
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 import config
+from utils.json_fixer import JsonFixer
+from utils.logger import get_logger
+
+logger = get_logger("data_manager")
 
 
 class DataManager:
@@ -69,7 +73,7 @@ class DataManager:
             
             return True
         except Exception as e:
-            print(f"保存数据失败: {e}")
+            logger.error(f"保存数据失败: {e}")
             return False
     
     def load_novel_data(self, novel_id: str, data_type: str) -> Optional[Dict[str, Any]]:
@@ -84,7 +88,7 @@ class DataManager:
             with open(data_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception as e:
-            print(f"加载数据失败: {e}")
+            logger.error(f"加载数据失败: {e}")
             return None
     
     def save_chapter(self, novel_id: str, chapter_number: int, chapter_content: Dict[str, Any]) -> bool:
@@ -92,7 +96,7 @@ class DataManager:
         try:
             novel_dir = os.path.join(self.novels_dir, novel_id)
             if not os.path.exists(novel_dir):
-                print(f"小说目录不存在: {novel_dir}")
+                logger.info(f"小说目录不存在: {novel_dir}")
                 return False
             
             # 确保章节数据包含 word_count 字段（兜底保障）
@@ -102,7 +106,7 @@ class DataManager:
                     # 计算实际字数（去除空白字符）
                     clean_content = content.replace(' ', '').replace('\n', '').replace('\r', '').replace('\t', '').replace('\u3000', '')
                     chapter_content['word_count'] = len(clean_content)
-                    print(f"自动计算章节字数: {chapter_content['word_count']}")
+                    logger.info(f"自动计算章节字数: {chapter_content['word_count']}")
                 else:
                     chapter_content['word_count'] = 0
             
@@ -114,26 +118,26 @@ class DataManager:
             chapter_file = os.path.join(novel_dir, f"chapter_{chapter_number:03d}.json")
             with open(chapter_file, 'w', encoding='utf-8') as f:
                 json.dump(chapter_content, f, ensure_ascii=False, indent=2)
-            print(f"章节JSON文件保存成功: {chapter_file}")
+            logger.info(f"章节JSON文件保存成功: {chapter_file}")
             
             # 保存章节TXT文件
             txt_file = self.save_chapter_txt(novel_id, chapter_number, chapter_content)
             if not txt_file:
-                print(f"章节TXT文件保存失败")
+                logger.error(f"章节TXT文件保存失败")
                 return False
-            print(f"章节TXT文件保存成功: {txt_file}")
+            logger.info(f"章节TXT文件保存成功: {txt_file}")
             
             # 更新元数据中的章节列表
             metadata_success = self._update_chapter_list(novel_id, chapter_number, chapter_content)
             if not metadata_success:
-                print(f"元数据更新失败")
+                logger.error(f"元数据更新失败")
                 return False
             
-            print(f"章节{chapter_number}保存完全成功")
+            logger.info(f"章节{chapter_number}保存完全成功")
             return True
             
         except Exception as e:
-            print(f"保存章节失败: {e}")
+            logger.error(f"保存章节失败: {e}")
             return False
     
     def get_chapters(self, novel_id: str) -> List[Dict[str, Any]]:
@@ -153,14 +157,14 @@ class DataManager:
                             chapter_data = json.load(f)
                             chapters.append(chapter_data)
                     except Exception as e:
-                        print(f"读取章节文件失败 {chapter_file}: {e}")
+                        logger.error(f"读取章节文件失败 {chapter_file}: {e}")
             
             # 按章节号排序
             chapters.sort(key=lambda x: x.get("chapter_number", 0))
             return chapters
             
         except Exception as e:
-            print(f"获取章节列表失败: {e}")
+            logger.error(f"获取章节列表失败: {e}")
             return []
     
     def save_chapter_txt(self, novel_id: str, chapter_number: int, chapter_content: Dict[str, Any]) -> str:
@@ -187,7 +191,7 @@ class DataManager:
             
             return txt_file
         except Exception as e:
-            print(f"保存章节TXT文件失败: {e}")
+            logger.error(f"保存章节TXT文件失败: {e}")
             return ""
     
     def create_knowledge_graph(self, novel_id: str, characters: Dict[str, Any], storyline: Dict[str, Any]) -> str:
@@ -239,7 +243,7 @@ class DataManager:
             
             return True
         except Exception as e:
-            print(f"更新知识图谱失败: {e}")
+            logger.error(f"更新知识图谱失败: {e}")
             return False
     
     def get_knowledge_graph_by_novel_id(self, novel_id: str) -> Optional[Dict[str, Any]]:
@@ -255,8 +259,31 @@ class DataManager:
                             return kg
             return None
         except Exception as e:
-            print(f"获取知识图谱失败: {e}")
+            logger.error(f"获取知识图谱失败: {e}")
             return None
+    
+    def get_all_knowledge_graphs(self) -> List[Dict[str, Any]]:
+        """获取所有知识图谱"""
+        try:
+            knowledge_graphs = []
+            if not os.path.exists(self.knowledge_graphs_dir):
+                return knowledge_graphs
+            
+            for filename in os.listdir(self.knowledge_graphs_dir):
+                if filename.endswith('.json'):
+                    kg_file = os.path.join(self.knowledge_graphs_dir, filename)
+                    try:
+                        with open(kg_file, 'r', encoding='utf-8') as f:
+                            kg = json.load(f)
+                            kg['id'] = filename.replace('.json', '')
+                            knowledge_graphs.append(kg)
+                    except Exception as e:
+                        logger.error(f"读取知识图谱文件失败 {kg_file}: {e}")
+            
+            return knowledge_graphs
+        except Exception as e:
+            logger.error(f"获取知识图谱列表失败: {e}")
+            return []
     
     def get_novel_list(self) -> List[Dict[str, Any]]:
         """获取小说列表"""
@@ -272,103 +299,13 @@ class DataManager:
                             metadata = json.load(f)
                         novels.append(metadata)
                     except Exception as e:
-                        print(f"读取小说元数据失败 {novel_id}: {e}")
+                        logger.error(f"读取小说元数据失败 {novel_id}: {e}")
         
         return novels
     
     def _fix_json_format(self, json_str: str) -> str:
-        """修复常见的JSON格式问题"""
-        # 移除多余的逗号
-        json_str = json_str.replace(',}', '}')
-        json_str = json_str.replace(',]', ']')
-        
-        # 直接替换所有中文引号为英文引号
-        json_str = json_str.replace('"', '"')  # 中文左双引号
-        json_str = json_str.replace('"', '"')  # 中文右双引号
-        json_str = json_str.replace(''', "'")  # 中文左单引号
-        json_str = json_str.replace(''', "'")  # 中文右单引号
-        
-        # 修复换行符问题
-        json_str = json_str.replace('\\n', '\n')
-        
-        # 修复转义字符问题
-        json_str = json_str.replace('\\"', '"')
-        
-        # 尝试修复不完整的JSON
-        if not json_str.strip().endswith('}'):
-            # 如果JSON不完整，尝试找到最后一个完整的对象
-            brace_count = 0
-            last_complete_pos = -1
-            
-            for i, char in enumerate(json_str):
-                if char == '{':
-                    brace_count += 1
-                elif char == '}':
-                    brace_count -= 1
-                    if brace_count == 0:
-                        last_complete_pos = i
-            
-            if last_complete_pos > 0:
-                json_str = json_str[:last_complete_pos + 1]
-        
-        return json_str
-    
-    def _fix_json_format_advanced(self, json_str: str) -> str:
-        """高级JSON格式修复"""
-        import re
-        
-        # 移除多余的逗号
-        json_str = json_str.replace(',}', '}')
-        json_str = json_str.replace(',]', ']')
-        
-        # 修复中文引号
-        json_str = json_str.replace('"', '"')
-        json_str = json_str.replace('"', '"')
-        json_str = json_str.replace(''', "'")
-        json_str = json_str.replace(''', "'")
-        
-        # 修复换行符
-        json_str = json_str.replace('\\n', '\n')
-        json_str = json_str.replace('\\"', '"')
-        
-        # 修复不完整的字符串
-        # 查找未闭合的字符串
-        in_string = False
-        escape_next = False
-        fixed_str = ""
-        
-        for i, char in enumerate(json_str):
-            if escape_next:
-                fixed_str += char
-                escape_next = False
-                continue
-                
-            if char == '\\':
-                fixed_str += char
-                escape_next = True
-                continue
-                
-            if char == '"' and not escape_next:
-                in_string = not in_string
-                fixed_str += char
-                continue
-                
-            if in_string:
-                # 在字符串内部，保持原样
-                fixed_str += char
-            else:
-                # 在字符串外部，处理特殊字符
-                if char == '\n':
-                    fixed_str += ' '
-                elif char == '\t':
-                    fixed_str += ' '
-                else:
-                    fixed_str += char
-        
-        # 移除多余的空白
-        fixed_str = re.sub(r'\s+', ' ', fixed_str)
-        
-        return fixed_str
+        """修复常见的JSON格式问题 - 使用统一的JsonFixer"""
+        return JsonFixer.fix_json_format(json_str, verbose=False)
     
     def _standardize_data_format(self, data: Dict[str, Any], data_type: str) -> Dict[str, Any]:
         """标准化数据格式，确保没有嵌套的JSON字符串"""
@@ -387,14 +324,14 @@ class DataManager:
         
         # 处理顶层content字段
         if "content" in standardized_data and isinstance(standardized_data["content"], str):
-            print("发现顶层content字段，尝试解析...")
+            logger.info("发现顶层content字段，尝试解析...")
             parsed_data = self._parse_agent_output(standardized_data["content"])
             if parsed_data:
-                print("✓ 成功解析顶层content字段")
+                logger.info("✓ 成功解析顶层content字段")
                 # 用解析后的数据替换整个数据结构
                 standardized_data = parsed_data
             else:
-                print("✗ 解析顶层content字段失败，保留原始数据")
+                logger.error("✗ 解析顶层content字段失败，保留原始数据")
                 # 删除content字段，保留其他数据
                 del standardized_data["content"]
         
@@ -478,7 +415,7 @@ class DataManager:
             return json.loads(content)
             
         except (json.JSONDecodeError, KeyError) as e:
-            print(f"解析智能体输出失败: {e}")
+            logger.error(f"解析智能体输出失败: {e}")
             # 如果解析失败，尝试更宽松的解析方法
             return self._parse_agent_output_fallback(content)
     
@@ -512,18 +449,17 @@ class DataManager:
             
             json_str = content[start:end+1]
             
-            # 尝试多种修复方法
-            for fix_method in [self._fix_json_format, self._fix_json_format_advanced]:
-                try:
-                    fixed_json = fix_method(json_str)
-                    return json.loads(fixed_json)
-                except json.JSONDecodeError:
-                    continue
+            # 使用统一的JSON修复方法
+            try:
+                fixed_json = self._fix_json_format(json_str)
+                return json.loads(fixed_json)
+            except json.JSONDecodeError:
+                pass
             
             return None
             
         except Exception as e:
-            print(f"备用解析方法也失败: {e}")
+            logger.error(f"备用解析方法也失败: {e}")
             return None
     
     def _clean_data_format(self, data: Dict[str, Any], data_type: str) -> Dict[str, Any]:
@@ -548,7 +484,7 @@ class DataManager:
                 with open(metadata_file, 'w', encoding='utf-8') as f:
                     json.dump(metadata, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"更新元数据失败: {e}")
+            logger.error(f"更新元数据失败: {e}")
     
     def _update_chapter_list(self, novel_id: str, chapter_number: int, chapter_content: Dict[str, Any]) -> bool:
         """更新章节列表"""
@@ -557,7 +493,7 @@ class DataManager:
             metadata_file = os.path.join(novel_dir, "metadata.json")
             
             if not os.path.exists(metadata_file):
-                print(f"元数据文件不存在: {metadata_file}")
+                logger.info(f"元数据文件不存在: {metadata_file}")
                 return False
             
             with open(metadata_file, 'r', encoding='utf-8') as f:
@@ -568,7 +504,7 @@ class DataManager:
                 "chapter_number": chapter_number,
                 "title": chapter_content.get("title", f"第{chapter_number}章"),
                 "created_at": datetime.now().isoformat(),
-                "word_count": len(str(chapter_content))
+                "word_count": len(chapter_content.get('content', ''))
             }
             
             # 查找是否已存在该章节
@@ -581,10 +517,10 @@ class DataManager:
             
             if existing_chapter is not None:
                 chapters[existing_chapter] = chapter_info
-                print(f"更新章节{chapter_number}信息")
+                logger.info(f"更新章节{chapter_number}信息")
             else:
                 chapters.append(chapter_info)
-                print(f"添加章节{chapter_number}信息")
+                logger.info(f"添加章节{chapter_number}信息")
             
             metadata["chapters"] = chapters
             metadata["updated_at"] = datetime.now().isoformat()
@@ -592,11 +528,11 @@ class DataManager:
             with open(metadata_file, 'w', encoding='utf-8') as f:
                 json.dump(metadata, f, ensure_ascii=False, indent=2)
             
-            print(f"元数据更新成功，当前章节数: {len(chapters)}")
+            logger.info(f"元数据更新成功，当前章节数: {len(chapters)}")
             return True
             
         except Exception as e:
-            print(f"更新章节列表失败: {e}")
+            logger.error(f"更新章节列表失败: {e}")
             return False
     
     def _extract_entities(self, characters: Dict[str, Any], storyline: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -704,7 +640,7 @@ class DataManager:
             
             return None
         except Exception as e:
-            print(f"查找小说失败: {e}")
+            logger.error(f"查找小说失败: {e}")
             return None
     
     def _load_novel_metadata(self, novel_id: str) -> Optional[Dict[str, Any]]:
@@ -719,36 +655,12 @@ class DataManager:
             with open(metadata_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception as e:
-            print(f"加载小说元数据失败: {e}")
+            logger.error(f"加载小说元数据失败: {e}")
             return None
     
     def get_novel_chapters(self, novel_id: str) -> List[Dict[str, Any]]:
-        """获取小说的所有章节"""
-        chapters = []
-        novel_dir = os.path.join(self.novels_dir, novel_id)
-        
-        if not os.path.exists(novel_dir):
-            return chapters
-        
-        # 查找所有章节文件
-        for filename in os.listdir(novel_dir):
-            if filename.startswith("chapter_") and filename.endswith(".json"):
-                try:
-                    chapter_file = os.path.join(novel_dir, filename)
-                    with open(chapter_file, 'r', encoding='utf-8') as f:
-                        chapter_data = json.load(f)
-                    
-                    # 提取章节号
-                    chapter_num = filename.replace("chapter_", "").replace(".json", "")
-                    chapter_data["chapter_number"] = int(chapter_num)
-                    
-                    chapters.append(chapter_data)
-                except Exception as e:
-                    print(f"加载章节 {filename} 失败: {e}")
-        
-        # 按章节号排序
-        chapters.sort(key=lambda x: x.get("chapter_number", 0))
-        return chapters
+        """获取小说的所有章节（别名，调用get_chapters）"""
+        return self.get_chapters(novel_id)
     
     def repair_existing_data(self, novel_id: str) -> bool:
         """修复现有数据格式问题"""
@@ -770,7 +682,7 @@ class DataManager:
                     with open(characters_file, 'w', encoding='utf-8') as f:
                         json.dump(cleaned_characters, f, ensure_ascii=False, indent=2)
                     repaired = True
-                    print(f"修复了小说 {novel_id} 的角色数据格式")
+                    logger.info(f"修复了小说 {novel_id} 的角色数据格式")
             
             # 修复故事线数据
             storyline_file = os.path.join(novel_dir, "storyline.json")
@@ -783,7 +695,7 @@ class DataManager:
                     with open(storyline_file, 'w', encoding='utf-8') as f:
                         json.dump(cleaned_storyline, f, ensure_ascii=False, indent=2)
                     repaired = True
-                    print(f"修复了小说 {novel_id} 的故事线数据格式")
+                    logger.info(f"修复了小说 {novel_id} 的故事线数据格式")
             
             # 修复章节数据
             for filename in os.listdir(novel_dir):
@@ -797,11 +709,11 @@ class DataManager:
                         with open(chapter_file, 'w', encoding='utf-8') as f:
                             json.dump(cleaned_chapter, f, ensure_ascii=False, indent=2)
                         repaired = True
-                        print(f"修复了小说 {novel_id} 的章节数据格式: {filename}")
+                        logger.info(f"修复了小说 {novel_id} 的章节数据格式: {filename}")
             
             return repaired
         except Exception as e:
-            print(f"修复数据失败: {e}")
+            logger.error(f"修复数据失败: {e}")
             return False
     
     def repair_all_novels(self) -> int:
@@ -814,7 +726,7 @@ class DataManager:
             if self.repair_existing_data(novel_id):
                 repaired_count += 1
         
-        print(f"总共修复了 {repaired_count} 个小说的数据格式")
+        logger.info(f"总共修复了 {repaired_count} 个小说的数据格式")
         return repaired_count
     
     def get_novel_knowledge_base(self, novel_id: str) -> Optional[Dict[str, Any]]:
@@ -851,7 +763,7 @@ class DataManager:
             
             return knowledge_base
         except Exception as e:
-            print(f"构建知识库失败: {e}")
+            logger.error(f"构建知识库失败: {e}")
             return None
     
     def _get_last_chapter_summary(self, chapters: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -889,7 +801,7 @@ class DataManager:
             
             return True
         except Exception as e:
-            print(f"更新小说状态失败: {e}")
+            logger.error(f"更新小说状态失败: {e}")
             return False
     
     def get_novel_statistics(self, novel_id: str) -> Dict[str, Any]:
@@ -921,7 +833,7 @@ class DataManager:
                 "status": metadata.get("status", "未知状态")
             }
         except Exception as e:
-            print(f"获取小说统计信息失败: {e}")
+            logger.error(f"获取小说统计信息失败: {e}")
             return {}
     
     def delete_chapter(self, novel_id: str, chapter_number: int) -> bool:
@@ -929,30 +841,30 @@ class DataManager:
         try:
             novel_dir = os.path.join(self.novels_dir, novel_id)
             if not os.path.exists(novel_dir):
-                print(f"小说目录不存在: {novel_dir}")
+                logger.info(f"小说目录不存在: {novel_dir}")
                 return False
             
             # 删除章节JSON文件
             chapter_file = os.path.join(novel_dir, f"chapter_{chapter_number:03d}.json")
             if os.path.exists(chapter_file):
                 os.remove(chapter_file)
-                print(f"已删除章节JSON文件: {chapter_file}")
+                logger.info(f"已删除章节JSON文件: {chapter_file}")
             
             # 删除章节TXT文件
             chapters_dir = os.path.join(novel_dir, "chapters")
             txt_file = os.path.join(chapters_dir, f"chapter_{chapter_number:03d}.txt")
             if os.path.exists(txt_file):
                 os.remove(txt_file)
-                print(f"已删除章节TXT文件: {txt_file}")
+                logger.info(f"已删除章节TXT文件: {txt_file}")
             
             # 更新元数据中的章节列表
             self._remove_chapter_from_metadata(novel_id, chapter_number)
             
-            print(f"章节{chapter_number}删除完成")
+            logger.info(f"章节{chapter_number}删除完成")
             return True
             
         except Exception as e:
-            print(f"删除章节失败: {e}")
+            logger.error(f"删除章节失败: {e}")
             return False
     
     def delete_novel(self, novel_id: str) -> bool:
@@ -960,12 +872,12 @@ class DataManager:
         try:
             novel_dir = os.path.join(self.novels_dir, novel_id)
             if not os.path.exists(novel_dir):
-                print(f"小说目录不存在: {novel_dir}")
+                logger.info(f"小说目录不存在: {novel_dir}")
                 return False
             
             import shutil
             shutil.rmtree(novel_dir)
-            print(f"已删除小说目录: {novel_dir}")
+            logger.info(f"已删除小说目录: {novel_dir}")
             
             # 删除知识图谱文件（如果存在）
             knowledge_graphs = self.get_all_knowledge_graphs()
@@ -974,20 +886,20 @@ class DataManager:
                     kg_file = os.path.join(self.knowledge_graphs_dir, f"{kg['id']}.json")
                     if os.path.exists(kg_file):
                         os.remove(kg_file)
-                        print(f"已删除知识图谱文件: {kg_file}")
+                        logger.info(f"已删除知识图谱文件: {kg_file}")
             
             # 删除快速续写状态文件（如果存在）
             quick_status_dir = os.path.join(self.novels_dir, "quick_continuation_status")
             quick_status_file = os.path.join(quick_status_dir, f"{novel_id}.json")
             if os.path.exists(quick_status_file):
                 os.remove(quick_status_file)
-                print(f"已删除快速续写状态文件: {quick_status_file}")
+                logger.info(f"已删除快速续写状态文件: {quick_status_file}")
             
-            print(f"小说 {novel_id} 删除完成")
+            logger.info(f"小说 {novel_id} 删除完成")
             return True
             
         except Exception as e:
-            print(f"删除小说失败: {e}")
+            logger.error(f"删除小说失败: {e}")
             return False
     
     def _remove_chapter_from_metadata(self, novel_id: str, chapter_number: int) -> bool:
@@ -1017,9 +929,9 @@ class DataManager:
             with open(metadata_file, 'w', encoding='utf-8') as f:
                 json.dump(metadata, f, ensure_ascii=False, indent=2)
             
-            print(f"已从元数据中移除章节{chapter_number}")
+            logger.info(f"已从元数据中移除章节{chapter_number}")
             return True
             
         except Exception as e:
-            print(f"更新元数据失败: {e}")
+            logger.error(f"更新元数据失败: {e}")
             return False

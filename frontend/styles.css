@@ -1,1838 +1,511 @@
-/* InkAI 小说创作系统样式 */
+/* ============================================================
+ * InkAI Frontend v2.0 Styles
+ * 保留旧版渐变 / 卡片美学，新增 5 阶段时间轴、章节网格、雷达图等
+ * ============================================================ */
 
 :root {
-    --primary-color: #0d6efd;
-    --success-color: #198754;
-    --info-color: #0dcaf0;
-    --warning-color: #ffc107;
-    --danger-color: #dc3545;
-    --light-color: #f8f9fa;
-    --dark-color: #212529;
+    --primary: #0d6efd;
+    --primary-dark: #0a58ca;
+    --primary-2: #6c5ce7;
+    --success: #198754;
+    --info: #0dcaf0;
+    --warning: #ffc107;
+    --danger: #dc3545;
+    --bg-soft: #f6f8fb;
+    --line: #e6eaf2;
+    --text-mid: #5a6677;
 }
 
+html, body { height: 100%; }
 body {
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    background-color: #f8f9fa;
+    font-family: "Segoe UI", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg-soft);
+    color: #1d2433;
     line-height: 1.6;
 }
 
-/* 导航栏样式 */
-.navbar-brand {
-    font-weight: 600;
-    font-size: 1.5rem;
-}
-
-/* 页面切换动画 */
-.page {
-    animation: fadeIn 0.3s ease-in-out;
-}
-
-@keyframes fadeIn {
-    from {
-        opacity: 0;
-        transform: translateY(20px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
-/* 功能图标样式 */
-.feature-icon {
-    width: 80px;
-    height: 80px;
-    margin: 0 auto;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: linear-gradient(135deg, var(--primary-color), #6c5ce7);
-    border-radius: 50%;
-    color: white;
-    font-size: 2rem;
-    box-shadow: 0 4px 15px rgba(13, 110, 253, 0.3);
-}
-
-/* 卡片样式 */
-.card {
-    border-radius: 15px;
-    transition: transform 0.3s ease, box-shadow 0.3s ease;
-}
-
-.card:hover {
-    transform: translateY(-5px);
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1) !important;
-}
-
-.card-header {
-    border-radius: 15px 15px 0 0 !important;
-    border: none;
-    padding: 1.5rem;
-}
-
-.card-body {
-    padding: 2rem;
-}
-
-/* 按钮样式 */
-.btn {
-    border-radius: 10px;
-    padding: 0.75rem 1.5rem;
-    font-weight: 500;
-    transition: all 0.3s ease;
-    border: none;
-}
-
-.btn:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
-}
-
-.btn-primary {
-    background: linear-gradient(135deg, var(--primary-color), #6c5ce7);
-}
-
-.btn-success {
-    background: linear-gradient(135deg, var(--success-color), #00b894);
-}
-
-.btn-info {
-    background: linear-gradient(135deg, var(--info-color), #74b9ff);
-}
-
-/* 表单样式 */
-.form-control {
-    border-radius: 10px;
-    border: 2px solid #e9ecef;
-    padding: 0.75rem 1rem;
-    transition: all 0.3s ease;
-}
-
-.form-control:focus {
-    border-color: var(--primary-color);
-    box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.25);
-}
-
-.form-label {
-    font-weight: 600;
-    color: var(--dark-color);
-    margin-bottom: 0.5rem;
-}
-
-/* 工作流程步骤样式 */
-.workflow-step {
-    background: white;
-    border-radius: 15px;
-    padding: 2rem;
-    margin-bottom: 1.5rem;
-    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.08);
-    border-left: 5px solid var(--primary-color);
-    transition: all 0.3s ease;
-}
-
-.workflow-step.completed {
-    border-left-color: var(--success-color);
-    background: linear-gradient(135deg, #f8fff9, #e8f5e8);
-}
-
-.workflow-step.current {
-    border-left-color: var(--warning-color);
-    background: linear-gradient(135deg, #fffbf0, #fef7e0);
-    /* 移除跳跃动画 */
-}
-
-.workflow-step.error {
-    border-left-color: var(--danger-color);
-    background: linear-gradient(135deg, #fff5f5, #ffe8e8);
-}
-
-@keyframes pulse {
-    0% {
-        box-shadow: 0 5px 15px rgba(255, 193, 7, 0.3);
-    }
-    50% {
-        box-shadow: 0 5px 25px rgba(255, 193, 7, 0.5);
-    }
-    100% {
-        box-shadow: 0 5px 15px rgba(255, 193, 7, 0.3);
-    }
-}
-
-.step-header {
-    display: flex;
-    align-items: center;
-    margin-bottom: 1rem;
-}
-
-.step-icon {
-    width: 50px;
-    height: 50px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin-right: 1rem;
-    font-size: 1.5rem;
-    color: white;
-}
-
-.step-icon.completed {
-    background: var(--success-color);
-}
-
-.step-icon.current {
-    background: var(--warning-color);
-}
-
-.step-icon.error {
-    background: var(--danger-color);
-}
-
-.step-icon.pending {
-    background: #6c757d;
-}
-
-.step-title {
-    font-size: 1.25rem;
-    font-weight: 600;
-    margin: 0;
-    color: var(--dark-color);
-}
-
-.step-description {
-    color: #6c757d;
-    margin: 0;
-}
-
-/* 小说列表样式 */
-.novel-item {
-    border: none;
-    border-radius: 15px;
-    margin-bottom: 1rem;
-    transition: all 0.3s ease;
-    background: white;
-    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1);
-}
-
-.novel-item:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
-}
-
-.novel-header {
-    background: linear-gradient(135deg, var(--primary-color), #6c5ce7);
-    color: white;
-    border-radius: 15px 15px 0 0;
-    padding: 1.5rem;
-}
-
-.novel-title {
-    font-size: 1.5rem;
-    font-weight: 600;
-    margin: 0;
-}
-
-.novel-meta {
-    font-size: 0.9rem;
-    opacity: 0.9;
-    margin-top: 0.5rem;
-}
-
-.novel-body {
-    padding: 1.5rem;
-}
-
-.novel-stats {
-    display: flex;
-    gap: 2rem;
-    margin-bottom: 1rem;
-}
-
-.stat-item {
-    text-align: center;
-}
-
-.stat-value {
-    font-size: 1.5rem;
-    font-weight: 600;
-    color: var(--primary-color);
-}
-
-.stat-label {
-    font-size: 0.9rem;
-    color: #6c757d;
-}
-
-/* 标签样式 */
-.tag {
-    display: inline-block;
-    background: linear-gradient(135deg, var(--primary-color), #6c5ce7);
-    color: white;
-    padding: 0.25rem 0.75rem;
-    border-radius: 20px;
-    font-size: 0.8rem;
-    margin: 0.25rem;
-    font-weight: 500;
-}
-
-.tag-category {
-    font-weight: 600;
-    color: var(--dark-color);
-    margin-bottom: 0.5rem;
-}
-
-/* 质量评估样式 */
-.quality-score {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 1rem;
-    border-radius: 25px;
-    font-weight: 600;
-    font-size: 1.1rem;
-}
-
-.quality-score.high {
-    background: linear-gradient(135deg, #d4edda, #c3e6cb);
-    color: var(--success-color);
-}
-
-.quality-score.medium {
-    background: linear-gradient(135deg, #fff3cd, #ffeaa7);
-    color: #856404;
-}
-
-.quality-score.low {
-    background: linear-gradient(135deg, #f8d7da, #f5c6cb);
-    color: var(--danger-color);
-}
-
-/* 章节内容样式 */
-.chapter-content {
-    background: white;
-    border-radius: 15px;
-    padding: 2rem;
-    margin: 1rem 0;
-    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.08);
-    border: 1px solid #e9ecef;
-}
-
-.chapter-title {
-    font-size: 1.5rem;
-    font-weight: 600;
-    color: var(--dark-color);
-    margin-bottom: 1rem;
-    padding-bottom: 0.5rem;
-    border-bottom: 2px solid var(--primary-color);
-}
-
-.chapter-text {
-    line-height: 1.8;
-    font-size: 1.1rem;
-    color: #495057;
-    text-align: justify;
-    white-space: pre-wrap;
-    word-wrap: break-word;
-    max-width: 100%;
-    overflow-wrap: break-word;
-}
-
-/* 加载覆盖层样式 */
-.loading-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: rgba(255, 255, 255, 0.9);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 9999;
-    backdrop-filter: blur(5px);
-}
-
-.loading-content {
-    text-align: center;
-    background: white;
-    padding: 3rem;
-    border-radius: 20px;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
-}
-
-/* 消息提示样式 */
-.alert {
-    border-radius: 15px;
-    border: none;
-    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-    margin-bottom: 1rem;
-    animation: slideIn 0.3s ease;
-}
-
-@keyframes slideIn {
-    from {
-        transform: translateX(100%);
-        opacity: 0;
-    }
-    to {
-        transform: translateX(0);
-        opacity: 1;
-    }
-}
-
-/* 步骤详情样式 */
-.step-header {
-    display: flex;
-    align-items: center;
-    margin-bottom: 1rem;
-}
-
-.step-actions {
-    margin-left: auto;
-}
-
-.step-toggle-icon {
-    transition: transform 0.3s ease;
-    color: #6c757d;
-}
-
-.step-details {
-    margin-top: 1rem;
-    padding-top: 1rem;
-    border-top: 1px solid #e9ecef;
-    animation: slideDown 0.3s ease;
-}
-
-@keyframes slideDown {
-    from {
-        opacity: 0;
-        transform: translateY(-10px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
-.step-detail-content {
-    background: #f8f9fa;
-    border-radius: 10px;
-    padding: 1.5rem;
-    margin-top: 1rem;
-}
-
-.step-detail-content h6 {
-    color: var(--primary-color);
-    margin-bottom: 1rem;
-    font-weight: 600;
-}
-
-/* 标签显示样式 */
-.tags-display {
-    margin-bottom: 1rem;
-}
-
-.tag-category {
-    margin-bottom: 1rem;
-    padding: 1rem;
-    background: white;
-    border-radius: 8px;
-    border: 1px solid #e9ecef;
-}
-
-.tag-category strong {
-    color: var(--dark-color);
-    margin-right: 0.5rem;
-    display: block;
-    margin-bottom: 0.5rem;
-}
-
-.tag-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-}
-
-.tag {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    background: linear-gradient(135deg, var(--primary-color), #6c5ce7);
-    color: white;
-    padding: 0.25rem 0.75rem;
-    border-radius: 20px;
-    font-size: 0.8rem;
-    margin: 0.25rem;
-    font-weight: 500;
-    transition: all 0.3s ease;
-}
-
-.tag:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 2px 8px rgba(13, 110, 253, 0.3);
-}
-
-.tag-remove {
-    cursor: pointer;
-    font-size: 0.7rem;
-    opacity: 0.8;
-    transition: all 0.3s ease;
-}
-
-.tag-remove:hover {
-    opacity: 1;
-    transform: scale(1.2);
-}
-
-/* 标签选项样式 */
-.tag-options {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    margin-top: 0.5rem;
-}
-
-.tag-option {
-    background: #f8f9fa;
-    border: 1px solid #dee2e6;
-    color: #495057;
-    padding: 0.25rem 0.75rem;
-    border-radius: 15px;
-    font-size: 0.8rem;
-    cursor: pointer;
-    transition: all 0.3s ease;
-}
-
-.tag-option:hover {
-    background: var(--primary-color);
-    color: white;
-    border-color: var(--primary-color);
-    transform: translateY(-1px);
-}
-
-.category-tags {
-    margin-bottom: 1rem;
-}
-
-.category-tags strong {
-    color: var(--primary-color);
-    font-size: 0.9rem;
-}
-
-/* 人物详情样式 */
-.character-details {
-    margin-bottom: 1rem;
-}
-
-.character-card {
-    background: white;
-    border-radius: 8px;
-    padding: 1rem;
-    border: 1px solid #e9ecef;
-    margin-bottom: 0.5rem;
-}
-
-.character-section {
-    margin-bottom: 1.5rem;
-    padding-bottom: 1rem;
-    border-bottom: 1px solid #f8f9fa;
-}
-
-.character-section:last-child {
-    border-bottom: none;
-    margin-bottom: 0;
-}
-
-.section-title {
-    color: var(--primary-color);
-    font-size: 0.9rem;
-    font-weight: 600;
-    margin-bottom: 0.75rem;
-    padding-bottom: 0.25rem;
-    border-bottom: 2px solid var(--primary-color);
-    display: inline-block;
-}
-
-.character-basic {
-    font-size: 0.95rem;
-    line-height: 1.6;
-}
-
-.character-description {
-    font-size: 0.9rem;
-    color: #6c757d;
-    line-height: 1.5;
-}
-
-.personality-grid {
+/* 导航 */
+.navbar { padding: .65rem 0; }
+.navbar-brand { font-weight: 700; font-size: 1.35rem; letter-spacing: .5px; }
+.brand-text { background: linear-gradient(135deg, #fff, #cfe2ff); -webkit-background-clip: text; color: transparent; }
+.brand-sub { opacity: .75; font-weight: 400; }
+
+/* Hero */
+.hero-section {
+    background: linear-gradient(135deg, #ffffff 0%, #eef4ff 100%);
+    border-radius: 16px;
+    padding: 2rem 2rem 1.75rem;
+    border: 1px solid var(--line);
+}
+.hero-title { font-weight: 700; }
+.hero-title i { background: linear-gradient(135deg, var(--primary), var(--primary-2));
+                -webkit-background-clip: text; color: transparent; }
+
+/* 通用卡片 */
+.card { border: 1px solid var(--line); border-radius: 14px; }
+.card-header { border-radius: 14px 14px 0 0 !important; border: none; padding: .85rem 1.1rem; font-weight: 600; }
+.card-body { padding: 1.25rem; }
+.btn { border-radius: 10px; font-weight: 500; }
+.btn-lg { padding: .8rem 1.6rem; }
+
+/* ============================================================
+ * 小说卡片
+ * ============================================================ */
+.novel-card { cursor: pointer; transition: transform .2s, box-shadow .2s; border-radius: 14px; overflow: hidden; }
+.novel-card:hover { transform: translateY(-4px); box-shadow: 0 12px 28px rgba(13, 110, 253, .15) !important; }
+.genre-badge { font-weight: 500; padding: .35em .65em; border: 1px solid var(--line); }
+.chapter-progress { border-radius: 4px; background: #eef2f9; }
+
+.audit-score { font-weight: 600; }
+.audit-score.high { color: var(--success); }
+.audit-score.mid  { color: var(--warning); }
+.audit-score.low  { color: var(--danger); }
+.audit-score-big { color: var(--primary); font-size: 1.2em; }
+
+.stage-row { display: flex; flex-wrap: wrap; gap: .35rem; }
+.stage-pill {
+    display: inline-flex; align-items: center; font-size: .73rem; padding: .2rem .55rem;
+    border-radius: 999px; background: #eef2f9; color: var(--text-mid); border: 1px solid var(--line);
+}
+.stage-pill.done { background: #e8f7ee; color: #146c43; border-color: #b6e0c5; }
+
+.empty-state { background: #fff; border: 1px dashed var(--line); border-radius: 14px; }
+
+/* ============================================================
+ * 5 阶段时间轴 —— v2.1 重做
+ * 用 grid 等分排版 + 容器层背景横线 + 渐变完成线，连线必准
+ * ============================================================ */
+.workflow-timeline {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 0.75rem;
-    margin-bottom: 0.75rem;
-}
-
-.personality-item {
-    background: #f8f9fa;
-    padding: 0.5rem;
-    border-radius: 6px;
-    border-left: 3px solid var(--primary-color);
-    font-size: 0.9rem;
-}
-
-.personality-item strong {
-    color: var(--primary-color);
-}
-
-/* 故事线详情样式 */
-.storyline-details {
-    margin-bottom: 1rem;
-}
-
-.storyline-section {
-    background: white;
-    border-radius: 8px;
-    padding: 1rem;
-    border: 1px solid #e9ecef;
-}
-
-.storyline-section h6 {
-    color: var(--primary-color);
-    margin-bottom: 0.5rem;
-    font-size: 0.95rem;
-}
-
-.storyline-section p {
-    margin: 0;
-    line-height: 1.6;
-    color: #495057;
-}
-
-/* 知识图谱详情样式 */
-.knowledge-graph-details {
-    margin-bottom: 1rem;
-}
-
-.kg-section {
-    background: white;
-    border-radius: 8px;
-    padding: 1rem;
-    border: 1px solid #e9ecef;
-    margin-bottom: 1rem;
-}
-
-.kg-section h6 {
-    color: var(--primary-color);
-    margin-bottom: 0.75rem;
-    font-size: 0.95rem;
-}
-
-.entity-item, .relation-item {
-    background: #f8f9fa;
-    border-radius: 6px;
-    padding: 0.75rem;
-    margin-bottom: 0.5rem;
-    border-left: 3px solid var(--primary-color);
-}
-
-.entity-attributes {
-    margin-top: 0.5rem;
-    color: #6c757d;
-}
-
-.relation-type {
-    background: var(--primary-color);
-    color: white;
-    padding: 0.2rem 0.5rem;
-    border-radius: 12px;
-    font-size: 0.8rem;
-    margin: 0 0.5rem;
-}
-
-/* 章节详情样式 */
-.chapter-details {
-    margin-bottom: 1rem;
-}
-
-.chapter-header {
-    background: white;
-    border-radius: 8px;
-    padding: 1rem;
-    border: 1px solid #e9ecef;
-    margin-bottom: 1rem;
-}
-
-.chapter-title {
-    color: var(--primary-color);
-    margin-bottom: 0.5rem;
-}
-
-.chapter-meta {
-    display: flex;
-    gap: 0.5rem;
-    align-items: center;
-}
-
-.chapter-content {
-    background: white;
-    border-radius: 8px;
-    padding: 1.5rem;
-    border: 1px solid #e9ecef;
-    margin-bottom: 1rem;
-}
-
-.chapter-text {
-    line-height: 1.8;
-    color: #495057;
-    text-align: justify;
-    font-size: 1rem;
-}
-
-/* 步骤操作按钮样式 */
-.step-actions {
-    display: flex;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-    margin-top: 1rem;
-}
-
-.step-actions .btn {
-    font-size: 0.85rem;
-    padding: 0.5rem 1rem;
-}
-
-/* 加载占位符样式 */
-.loading-placeholder {
-    text-align: center;
-    color: #6c757d;
-    padding: 2rem;
-}
-
-/* 编辑模式样式 */
-.editable {
-    transition: all 0.3s ease;
-    border-radius: 4px;
-    padding: 2px 4px;
-    margin: 0 2px;
-}
-
-.editable:hover {
-    background-color: #f8f9fa;
-    cursor: pointer;
-}
-
-.editable.editing {
-    background-color: #fff3cd;
-    border: 2px solid #ffc107;
-    outline: none;
-    box-shadow: 0 0 0 0.2rem rgba(255, 193, 7, 0.25);
-}
-
-.editable.modified {
-    background-color: #d1ecf1;
-    border: 2px solid #17a2b8;
-}
-
-/* 质量评估样式 */
-.quality-assessment {
-    background: white;
-    border-radius: 10px;
-    padding: 1.5rem;
-    border: 1px solid #e9ecef;
-    margin-bottom: 1rem;
-}
-
-.quality-suggestions {
-    margin-top: 1rem;
-}
-
-.suggestions-list {
-    margin: 0.5rem 0 0 0;
-    padding-left: 1.5rem;
-}
-
-.suggestions-list li {
-    margin-bottom: 0.5rem;
-    color: #6c757d;
-    line-height: 1.5;
-}
-
-/* 步骤控制按钮样式 */
-.step-controls {
-    display: flex;
-    gap: 0.5rem;
-}
-
-.step-controls .btn {
-    font-size: 0.8rem;
-    padding: 0.4rem 0.8rem;
-}
-
-/* 内容编辑区域样式 */
-#character-content .editable,
-#storyline-content .editable {
-    min-height: 1.2em;
-    display: inline-block;
-    min-width: 50px;
-}
-
-#character-content .editable.editing,
-#storyline-content .editable.editing {
-    min-width: 100px;
-    padding: 0.5rem;
-}
-
-/* 保存按钮动画 */
-.btn-success {
-    position: relative;
-    overflow: hidden;
-}
-
-.btn-success:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 4px 8px rgba(25, 135, 84, 0.3);
-}
-
-/* 编辑提示样式 */
-.edit-hint {
-    background: #e3f2fd;
-    border: 1px solid #2196f3;
-    border-radius: 6px;
-    padding: 0.5rem 1rem;
-    margin-bottom: 1rem;
-    font-size: 0.9rem;
-    color: #1976d2;
-}
-
-.edit-hint i {
-    margin-right: 0.5rem;
-}
-
-/* 响应式设计 */
-@media (max-width: 768px) {
-    .container {
-        padding: 0 1rem;
-    }
-    
-    .card-body {
-        padding: 1.5rem;
-    }
-    
-    .novel-stats {
-        flex-direction: column;
-        gap: 1rem;
-    }
-    
-    .feature-icon {
-        width: 60px;
-        height: 60px;
-        font-size: 1.5rem;
-    }
-    
-    .workflow-step {
-        padding: 1.5rem;
-    }
-    
-    .step-actions {
-        flex-direction: column;
-    }
-    
-    .step-actions .btn {
-        width: 100%;
-    }
-}
-
-/* 滚动条样式 */
-::-webkit-scrollbar {
-    width: 8px;
-}
-
-::-webkit-scrollbar-track {
-    background: #f1f1f1;
-    border-radius: 10px;
-}
-
-::-webkit-scrollbar-thumb {
-    background: linear-gradient(135deg, var(--primary-color), #6c5ce7);
-    border-radius: 10px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-    background: linear-gradient(135deg, #0a58ca, #5a4fcf);
-}
-
-/* 工具提示样式 */
-.tooltip {
-    font-size: 0.9rem;
-}
-
-.tooltip-inner {
-    background: var(--dark-color);
-    border-radius: 8px;
-    padding: 0.5rem 0.75rem;
-}
-
-/* 进度条样式 */
-.progress {
-    height: 8px;
-    border-radius: 10px;
-    background: #e9ecef;
-}
-
-.progress-bar {
-    background: linear-gradient(135deg, var(--primary-color), #6c5ce7);
-    border-radius: 10px;
-    transition: width 0.6s ease;
-}
-
-/* 徽章样式 */
-.badge {
-    border-radius: 20px;
-    padding: 0.5rem 0.75rem;
-    font-weight: 500;
-}
-
-/* 模态框样式 */
-.modal-content {
-    border-radius: 20px;
-    border: none;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-}
-
-.modal-header {
-    border-radius: 20px 20px 0 0;
-    border-bottom: 1px solid #e9ecef;
-    background: linear-gradient(135deg, var(--primary-color), #6c5ce7);
-    color: white;
-}
-
-.modal-body {
-    padding: 2rem;
-}
-
-.modal-footer {
-    border-radius: 0 0 20px 20px;
-    border-top: 1px solid #e9ecef;
-    padding: 1.5rem 2rem;
-}
-
-/* 章节工作流模态框样式 */
-.workflow-step {
-    transition: all 0.3s ease;
-    border-left: 4px solid transparent !important;
-}
-
-.workflow-step:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-}
-
-.workflow-step.bg-light-success {
-    background-color: #d1edff !important;
-    border-left-color: var(--success-color) !important;
-}
-
-.workflow-step.bg-light-warning {
-    background-color: #fff3cd !important;
-    border-left-color: var(--warning-color) !important;
-}
-
-.workflow-step.bg-light-secondary {
-    background-color: #f8f9fa !important;
-    border-left-color: #6c757d !important;
-}
-
-.workflow-steps .workflow-step:last-child {
-    margin-bottom: 0 !important;
-}
-
-/* 章节列表中的按钮样式 */
-.chapter-item .btn {
-    transition: all 0.2s ease;
-}
-
-.chapter-item .btn:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-}
-
-.chapter-item .btn-outline-info {
-    border-color: var(--info-color);
-    color: var(--info-color);
-}
-
-.chapter-item .btn-outline-info:hover {
-    background-color: var(--info-color);
-    border-color: var(--info-color);
-    color: white;
-}
-
-/* 工作流模块样式 */
-.workflow-module .card {
-    border: none;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-    transition: all 0.3s ease;
-}
-
-.workflow-module .card:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 16px rgba(0,0,0,0.15);
-}
-
-.workflow-module .card-header {
-    border-radius: 8px 8px 0 0 !important;
-    border: none;
-    font-weight: 600;
-}
-
-.workflow-module .card-body {
-    padding: 1.5rem;
-}
-
-.storyline-summary, .key-events {
-    max-height: 120px;
-    overflow-y: auto;
-    font-size: 0.9rem;
-    line-height: 1.5;
-}
-
-.quality-score .badge {
-    font-size: 1rem;
-    padding: 0.5rem 1rem;
-}
-
-.suggestions ul li {
-    margin-bottom: 0.5rem;
-    font-size: 0.9rem;
-}
-
-.graph-nodes {
-    max-height: 100px;
-    overflow-y: auto;
-}
-
-.graph-nodes .badge {
-    font-size: 0.8rem;
-}
-
-/* 工作流模块新增样式 */
-.scene-setting {
-    font-size: 0.9rem;
-    line-height: 1.5;
-}
-
-.overall-assessment {
-    max-height: 120px;
-    overflow-y: auto;
-    font-size: 0.9rem;
-    line-height: 1.5;
-}
-
-.strengths ul li, .weaknesses ul li {
-    margin-bottom: 0.5rem;
-    font-size: 0.9rem;
-}
-
-.evaluation-details h6 {
-    font-size: 0.95rem;
-    font-weight: 600;
-}
-
-.storyline-summary, .key-events {
-    max-height: 200px;
-    overflow-y: auto;
-    font-size: 0.9rem;
-    line-height: 1.6;
-}
-
-.stat-item {
-    padding: 1rem;
-    border-radius: 8px;
-    background: linear-gradient(135deg, #f8f9fa, #e9ecef);
-}
-
-.stat-item h4 {
-    font-weight: 700;
-    margin-bottom: 0.5rem;
-}
-
-.stat-item p {
-    margin-bottom: 0;
-    font-size: 0.9rem;
-}
-
-.graph-nodes {
-    max-height: 120px;
-    overflow-y: auto;
-}
-
-.workflow-module .card-body {
-    padding: 1.5rem;
-}
-
-.workflow-module .card-header h6 {
-    font-size: 1.1rem;
-    font-weight: 600;
-}
-
-.chapter-summary, .character-development, .next-chapter-hint {
-    max-height: 150px;
-    overflow-y: auto;
-    font-size: 0.9rem;
-    line-height: 1.6;
-}
-
-.key-events, .foreshadowing {
-    max-height: 200px;
-    overflow-y: auto;
-    font-size: 0.9rem;
-    line-height: 1.6;
-}
-
-.event-item, .foreshadow-item {
-    padding: 0.3rem 0;
-    border-left: 2px solid #28a745;
-    padding-left: 0.5rem;
-    margin-left: 0.5rem;
-}
-
-.foreshadow-item {
-    border-left-color: #ffc107;
-}
-
-.chapter-info {
-    font-size: 0.9rem;
-}
-
-.scores-grid {
-    background: rgba(0, 0, 0, 0.02);
-    border-radius: 6px;
-    padding: 0.75rem;
-}
-
-.score-item {
-    font-size: 0.9rem;
-    padding: 0.25rem 0;
-}
-
-.score-item .badge {
-    font-size: 0.8rem;
-    min-width: 40px;
-}
-
-/* 增强的续写界面样式 */
-.novel-info-enhanced {
-    margin-bottom: 2rem;
-}
-
-.novel-title-enhanced {
-    color: #2c3e50;
-    font-weight: 600;
-    margin-bottom: 0.5rem;
-}
-
-.novel-stats {
-    margin-bottom: 0.5rem;
-}
-
-.novel-stats .stat-item {
-    display: inline-flex;
-    align-items: center;
-    background: #f8f9fa;
-    padding: 0.25rem 0.75rem;
-    border-radius: 20px;
-    font-size: 0.875rem;
-    color: #495057;
-    margin-right: 0.5rem;
-    margin-bottom: 0.25rem;
-}
-
-.continuation-requirements {
-    margin-top: 0.5rem;
-    padding: 0.5rem;
-    background: #e3f2fd;
-    border-radius: 6px;
-    border-left: 3px solid #2196f3;
-}
-
-.step-status {
-    margin-top: 0.5rem;
-}
-
-.step-actions-current {
-    margin-top: 1rem;
-    padding-top: 1rem;
-    border-top: 1px solid #e9ecef;
-}
-
-.step-completed-message {
-    margin-top: 1rem;
-}
-
-.step-completed-message .alert {
-    background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
-    border: none;
-    border-radius: 8px;
-}
-
-/* 响应式设计 */
-@media (max-width: 768px) {
-    .novel-stats {
-        flex-direction: column;
-        gap: 0.5rem !important;
-    }
-    
-    .novel-stats .stat-item {
-        justify-content: center;
-        width: 100%;
-        margin-right: 0;
-    }
-    
-    .novel-title-enhanced {
-        font-size: 1.25rem;
-    }
-    
-    .workflow-step {
-        padding: 1.5rem;
-    }
-    
-    .step-actions-current .btn {
-        width: 100%;
-    }
-}
-
-/* 续写选择页面样式 */
-.novel-detail-for-continuation .card {
-    transition: all 0.3s ease;
-}
-
-.novel-detail-for-continuation .card:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 8px 25px rgba(0,0,0,0.15) !important;
-}
-
-.continuation-option-card .card {
-    transition: all 0.3s ease;
-    cursor: pointer;
-}
-
-.continuation-option-card .card:hover {
-    transform: translateY(-5px);
-    box-shadow: 0 10px 30px rgba(0,0,0,0.2) !important;
-    border-color: var(--primary-color) !important;
-}
-
-.option-icon {
-    transition: all 0.3s ease;
-}
-
-.continuation-option-card .card:hover .option-icon {
-    transform: scale(1.1);
-}
-
-.chapter-preview-item {
-    transition: all 0.3s ease;
-}
-
-.chapter-preview-item:hover {
-    background-color: #f8f9fa;
-    transform: translateX(5px);
-}
-
-.stat-item {
-    padding: 1rem;
-    border-radius: 8px;
-    background: linear-gradient(135deg, #f8f9fa, #e9ecef);
-    transition: all 0.3s ease;
-}
-
-.stat-item:hover {
-    background: linear-gradient(135deg, #e3f2fd, #bbdefb);
-    transform: translateY(-2px);
-}
-
-.chapter-edit-selection .chapter-item {
-    transition: all 0.3s ease;
-}
-
-.chapter-edit-selection .chapter-item:hover {
-    background-color: #fff3cd;
-    border-color: #ffc107;
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(255, 193, 7, 0.2);
-}
-
-/* 响应式设计 */
-@media (max-width: 768px) {
-    .continuation-option-card .card-body {
-        padding: 1rem;
-    }
-    
-    .option-icon .fa-3x {
-        font-size: 2rem !important;
-    }
-    
-    .chapter-preview-item {
-        flex-direction: column;
-        align-items: flex-start !important;
-        gap: 0.5rem;
-    }
-    
-    .chapter-edit-selection .chapter-item {
-        flex-direction: column;
-        align-items: flex-start !important;
-        gap: 1rem;
-    }
-    
-    .chapter-edit-selection .chapter-actions {
-        width: 100%;
-        display: flex;
-        justify-content: space-between;
-    }
-}
-
-/* 工作流程导航按钮样式 */
-.workflow-nav-buttons {
-    display: flex;
-    gap: 0.5rem;
-    align-items: center;
-}
-
-.workflow-nav-buttons .btn {
-    font-size: 0.875rem;
-    padding: 0.375rem 0.75rem;
-    border-radius: 0.375rem;
-    transition: all 0.2s ease-in-out;
-    white-space: nowrap;
-}
-
-.workflow-nav-buttons .btn:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-}
-
-.workflow-nav-buttons .btn-light {
-    background-color: rgba(255, 255, 255, 0.9);
-    border-color: rgba(255, 255, 255, 0.5);
-    color: #333;
-}
-
-.workflow-nav-buttons .btn-light:hover {
-    background-color: rgba(255, 255, 255, 1);
-    border-color: rgba(255, 255, 255, 0.8);
-    color: #333;
-}
-
-.workflow-nav-buttons .btn-outline-light {
-    border-color: rgba(255, 255, 255, 0.7);
-    color: rgba(255, 255, 255, 0.9);
-}
-
-.workflow-nav-buttons .btn-outline-light:hover {
-    background-color: rgba(255, 255, 255, 0.1);
-    border-color: rgba(255, 255, 255, 1);
-    color: white;
-}
-
-/* 响应式导航按钮 */
-@media (max-width: 768px) {
-    .workflow-nav-buttons {
-        flex-direction: column;
-        gap: 0.25rem;
-        width: 100%;
-    }
-    
-    .workflow-nav-buttons .btn {
-        font-size: 0.75rem;
-        padding: 0.25rem 0.5rem;
-        width: 100%;
-    }
-}
-
-/* 快速续写按钮样式 */
-.btn-success {
-    background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
-    border: none;
-    box-shadow: 0 2px 4px rgba(40, 167, 69, 0.3);
-    transition: all 0.3s ease;
-}
-
-.btn-success:hover {
-    background: linear-gradient(135deg, #218838 0%, #1ea085 100%);
-    transform: translateY(-1px);
-    box-shadow: 0 4px 8px rgba(40, 167, 69, 0.4);
-}
-
-.btn-success:active {
-    transform: translateY(0);
-    box-shadow: 0 2px 4px rgba(40, 167, 69, 0.3);
-}
-
-/* 快速续写模态框样式 */
-#quickContinuationModal .modal-content {
-    border: none;
-    border-radius: 15px;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
-}
-
-#quickContinuationModal .modal-header {
-    border-radius: 15px 15px 0 0;
-    background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
-}
-
-#quickContinuationModal .card {
-    border-radius: 10px;
-    transition: all 0.3s ease;
-}
-
-#quickContinuationModal .card:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-}
-
-#quickContinuationModal .card-header {
-    border-radius: 10px 10px 0 0;
-}
-
-#quickContinuationModal .form-control:focus,
-#quickContinuationModal .form-select:focus {
-    border-color: #28a745;
-    box-shadow: 0 0 0 0.2rem rgba(40, 167, 69, 0.25);
-}
-
-#quickContinuationModal .btn {
-    border-radius: 8px;
-    font-weight: 500;
-    transition: all 0.3s ease;
-}
-
-#quickContinuationModal .btn-primary {
-    background: linear-gradient(135deg, #007bff 0%, #0056b3 100%);
-    border: none;
-}
-
-#quickContinuationModal .btn-primary:hover {
-    background: linear-gradient(135deg, #0056b3 0%, #004085 100%);
-    transform: translateY(-1px);
-}
-
-#quickContinuationModal .btn-success {
-    background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
-    border: none;
-}
-
-#quickContinuationModal .btn-success:hover {
-    background: linear-gradient(135deg, #218838 0%, #1ea085 100%);
-    transform: translateY(-1px);
-}
-
-/* 快速续写信息提示样式 */
-.alert-info {
-    background: linear-gradient(135deg, #d1ecf1 0%, #bee5eb 100%);
-    border: 1px solid #bee5eb;
-    border-radius: 10px;
-}
-
-.alert-info .alert-heading {
-    color: #0c5460;
-    font-weight: 600;
-}
-
-.alert-info ul li {
-    color: #0c5460;
-    margin-bottom: 0.25rem;
-}
-
-.alert-info ul li strong {
-    color: #0a4a52;
-}
-
-/* 快速续写卡片特殊样式 */
-.continuation-option-card .card.border-success {
-    border-color: #28a745 !important;
-    box-shadow: 0 4px 8px rgba(40, 167, 69, 0.15);
-    transition: all 0.3s ease;
-}
-
-.continuation-option-card .card.border-success:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 8px 16px rgba(40, 167, 69, 0.25);
-    border-color: #20c997 !important;
-}
-
-.continuation-option-card .card.border-success .option-icon {
+    grid-template-columns: repeat(5, 1fr);
+    gap: 0;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 1.4rem 1.2rem 1.2rem;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, .03);
     position: relative;
 }
-
-.continuation-option-card .card.border-success .option-icon::after {
-    content: '';
+/* 底层背景横线（贯穿 5 个节点圆心） */
+.workflow-timeline .timeline-track {
     position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    width: 60px;
-    height: 60px;
-    background: linear-gradient(135deg, rgba(40, 167, 69, 0.1) 0%, rgba(32, 201, 151, 0.1) 100%);
-    border-radius: 50%;
-    z-index: -1;
+    left: 10%;            /* 第 1 个节点中心 = 10% */
+    right: 10%;           /* 第 5 个节点中心 = 90% */
+    top: calc(1.4rem + 22px); /* padding-top + 圆形半径 */
+    height: 3px;
+    background: var(--line);
+    border-radius: 2px;
+    z-index: 1;
 }
-
-.continuation-option-card .card.border-success .btn-success {
-    background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
-    border: none;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    box-shadow: 0 3px 6px rgba(40, 167, 69, 0.3);
+/* 已完成的进度横线（覆盖在背景上）—— 由 JS 设 left/width */
+.workflow-timeline .timeline-track-done {
+    position: absolute;
+    top: calc(1.4rem + 22px);
+    height: 3px;
+    background: linear-gradient(90deg, #28c76f, #198754);
+    border-radius: 2px;
+    z-index: 2;
+    transition: width .4s ease, left .4s ease;
 }
-
-.continuation-option-card .card.border-success .btn-success:hover {
-    background: linear-gradient(135deg, #218838 0%, #1ea085 100%);
-    transform: translateY(-2px);
-    box-shadow: 0 5px 10px rgba(40, 167, 69, 0.4);
-}
-
-/* 快速续写进度页面样式 */
-.quick-continuation-progress {
-    padding: 1rem;
-}
-
-.quick-continuation-progress .info-item {
-    margin-bottom: 0.5rem;
-    padding: 0.5rem 0;
-    border-bottom: 1px solid #f0f0f0;
-}
-
-.quick-continuation-progress .info-item:last-child {
-    border-bottom: none;
-}
-
-.quick-continuation-progress .progress {
-    border-radius: 15px;
-    overflow: hidden;
-    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-
-.quick-continuation-progress .progress-bar {
-    transition: width 0.6s ease;
-    font-weight: 600;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.quick-continuation-progress .task-controls {
-    background: #f8f9fa;
-    padding: 1.5rem;
-    border-radius: 10px;
-    border: 1px solid #e9ecef;
-}
-
-.quick-continuation-progress .task-controls .btn {
-    border-radius: 8px;
-    font-weight: 500;
-    transition: all 0.3s ease;
-}
-
-.quick-continuation-progress .task-controls .btn:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
-}
-
-.quick-continuation-progress .chapter-detail-card {
-    background: #ffffff;
-    border: 1px solid #e9ecef;
-    border-radius: 8px;
-    padding: 1rem;
-    transition: all 0.3s ease;
-}
-
-.quick-continuation-progress .chapter-detail-card:hover {
-    border-color: #007bff;
-    box-shadow: 0 2px 8px rgba(0, 123, 255, 0.15);
-    transform: translateY(-1px);
-}
-
-.quick-continuation-progress .chapter-number .badge {
-    font-size: 0.8rem;
-    padding: 0.5rem 0.75rem;
-}
-
-.quick-continuation-progress .chapter-status {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-}
-
-/* 状态指示器样式（移除动画） */
-.quick-continuation-progress .badge.bg-primary {
-    /* 移除跳跃动画 */
-}
-
-@keyframes pulse {
-    0% {
-        box-shadow: 0 0 0 0 rgba(0, 123, 255, 0.7);
-    }
-    70% {
-        box-shadow: 0 0 0 10px rgba(0, 123, 255, 0);
-    }
-    100% {
-        box-shadow: 0 0 0 0 rgba(0, 123, 255, 0);
-    }
-}
-
-/* 查看进度按钮样式 */
-.btn-info {
-    background: linear-gradient(135deg, #17a2b8 0%, #138496 100%);
-    border: none;
-    color: white;
-    font-weight: 500;
-    transition: all 0.3s ease;
-}
-
-.btn-info:hover {
-    background: linear-gradient(135deg, #138496 0%, #117a8b 100%);
-    transform: translateY(-1px);
-    box-shadow: 0 4px 8px rgba(23, 162, 184, 0.3);
-    color: white;
-}
-
-.btn-warning {
-    background: linear-gradient(135deg, #ffc107 0%, #e0a800 100%);
-    border: none;
-    color: #212529;
-    font-weight: 500;
-    transition: all 0.3s ease;
-}
-
-.btn-warning:hover {
-    background: linear-gradient(135deg, #e0a800 0%, #d39e00 100%);
-    transform: translateY(-1px);
-    box-shadow: 0 4px 8px rgba(255, 193, 7, 0.3);
-    color: #212529;
-}
-
-/* 快速续写卡片中的按钮布局 */
-.continuation-option-card .btn-sm {
-    margin-top: 0.5rem;
-    width: 100%;
-}
-
-/* 响应式调整 */
-@media (max-width: 768px) {
-    .quick-continuation-progress .task-controls {
-        margin-top: 1rem;
-        padding: 1rem;
-    }
-    
-    .quick-continuation-progress .info-item {
-        font-size: 0.9rem;
-    }
-    
-    .quick-continuation-progress .chapter-detail-card {
-        padding: 0.75rem;
-    }
-}
-
-/* 章节展开/收起样式 */
-.chapters-preview {
-    position: relative;
-}
-
-.all-chapters {
-    animation: slideDown 0.3s ease-in-out;
-    border-top: 1px solid #e9ecef;
-    padding-top: 1rem;
-    margin-top: 0.5rem;
-}
-
-@keyframes slideDown {
-    from {
-        opacity: 0;
-        max-height: 0;
-        transform: translateY(-10px);
-    }
-    to {
-        opacity: 1;
-        max-height: 1000px;
-        transform: translateY(0);
-    }
-}
-
-.chapter-preview-item {
-    transition: all 0.2s ease-in-out;
-}
-
-.chapter-preview-item:hover {
-    background-color: #f8f9fa;
-    transform: translateX(2px);
-}
-
-/* 章节切换按钮样式 */
-.btn-outline-secondary:hover {
-    background-color: #6c757d;
-    border-color: #6c757d;
-    color: white;
-}
-
-.btn-outline-primary:hover {
-    background-color: #0d6efd;
-    border-color: #0d6efd;
-    color: white;
-}
-
-/* 8节点流程图样式 */
-.process-flow {
-    background: #f8f9fa;
-    border-radius: 8px;
-    padding: 20px;
-    border: 1px solid #e9ecef;
-}
-
-.process-nodes {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    align-items: center;
-    justify-content: space-between;
-}
-
-.process-node {
+.stage-step {
     display: flex;
     flex-direction: column;
     align-items: center;
-    position: relative;
-    min-width: 80px;
-    flex: 1;
-}
-
-.node-icon {
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 16px;
-    margin-bottom: 8px;
-    transition: all 0.3s ease;
-}
-
-.process-node.pending .node-icon {
-    background: #e9ecef;
-    color: #6c757d;
-}
-
-.process-node.current .node-icon {
-    background: #0d6efd;
-    color: white;
-    /* 移除跳跃动画 */
-}
-
-.process-node.completed .node-icon {
-    background: #198754;
-    color: white;
-}
-
-.process-node.skipped .node-icon {
-    background: #ffc107;
-    color: #212529;
-}
-
-.node-content {
+    gap: .55rem;
     text-align: center;
-    margin-bottom: 5px;
+    position: relative;
+    z-index: 3;
+}
+.stage-circle {
+    width: 44px; height: 44px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: #eef2f9; color: #94a3b8; flex-shrink: 0;
+    border: 3px solid #fff; outline: 2px solid var(--line);
+    transition: all .25s;
+    z-index: 4;
+}
+.stage-step.done .stage-circle {
+    background: linear-gradient(135deg, #28c76f, #198754);
+    outline-color: #19a153; color: #fff;
+    box-shadow: 0 4px 14px rgba(40, 199, 111, .35);
+}
+.stage-step.warn .stage-circle {
+    background: linear-gradient(135deg, #ffc107, #fb923c);
+    outline-color: #fb923c; color: #fff;
+    box-shadow: 0 4px 14px rgba(251, 146, 60, .35);
+}
+.stage-meta { padding: 0 .25rem; }
+.stage-name { font-weight: 600; font-size: .9rem; line-height: 1.15; }
+.stage-sub { font-size: .74rem; color: var(--text-mid); margin-top: 2px; }
+
+/* ============================================================
+ * 三幕剧块
+ * ============================================================ */
+.acts-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: .6rem; margin-bottom: .5rem; }
+.act-block { background: #f8fafc; border-radius: 10px; padding: .65rem .8rem; border-left: 3px solid var(--info); }
+.act-block.act1 { border-color: #ffc107; }
+.act-block.act2 { border-color: #dc3545; }
+.act-block.act3 { border-color: #198754; }
+.act-label { font-size: .72rem; color: var(--text-mid); font-weight: 600; margin-bottom: .25rem; }
+.act-content { font-size: .82rem; color: #2c3645; line-height: 1.45; }
+
+.acts-mini { display: flex; flex-wrap: wrap; gap: .35rem; }
+.act-mini { padding: .3rem .7rem; border-radius: 8px; font-size: .8rem; font-weight: 500; }
+
+/* ============================================================
+ * Canon 块
+ * ============================================================ */
+.canon-stat {
+    flex: 0 0 auto; min-width: 70px; text-align: center; padding: .55rem .85rem;
+    border-radius: 10px; background: #f8fafc; border: 1px solid var(--line);
+}
+.canon-stat.danger  { border-color: #f5c2c7; background: #fef2f2; }
+.canon-stat.warning { border-color: #ffd966; background: #fff8e1; }
+.canon-stat.info    { border-color: #b6e3f4; background: #f0f9ff; }
+.canon-stat-num { font-size: 1.6rem; font-weight: 700; line-height: 1; }
+.canon-stat-lbl { font-size: .72rem; color: var(--text-mid); margin-top: 2px; }
+
+.issue-item { padding: .55rem .8rem; border-radius: 8px; margin-bottom: .4rem; background: #f8fafc; border-left: 3px solid var(--info); }
+.issue-item.issue-error   { border-left-color: var(--danger); background: #fff5f5; }
+.issue-item.issue-warning { border-left-color: var(--warning); background: #fffbeb; }
+.issue-item.issue-info    { border-left-color: var(--info); background: #f0f9ff; }
+
+/* ============================================================
+ * Blueprint 块
+ * ============================================================ */
+.vol-list { display: flex; flex-direction: column; gap: .4rem; }
+.vol-row {
+    display: flex; gap: .75rem; align-items: center; padding: .55rem .8rem;
+    background: #f8fafc; border-radius: 10px; border: 1px solid var(--line);
+}
+.vol-idx {
+    width: 48px; flex-shrink: 0; padding: .35rem .55rem;
+    background: linear-gradient(135deg, var(--primary), var(--primary-2));
+    color: #fff; border-radius: 8px; font-size: .82rem; font-weight: 600; text-align: center;
+}
+.vol-title { font-weight: 500; font-size: .92rem; }
+
+.ledger-list { display: flex; flex-direction: column; gap: .3rem; }
+.ledger-row { padding: .35rem .55rem; background: #f8fafc; border-radius: 6px; }
+
+/* ============================================================
+ * 角色 块
+ * ============================================================ */
+.char-row {
+    display: flex; align-items: center; gap: .85rem; padding: .8rem 1.1rem;
+    border-bottom: 1px solid var(--line);
+}
+.char-row:last-child { border-bottom: none; }
+.char-row.main { background: linear-gradient(90deg, #fff8e1 0%, #ffffff 100%); }
+.char-avatar {
+    width: 42px; height: 42px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(135deg, var(--primary), var(--primary-2)); color: #fff;
+    flex-shrink: 0; font-size: 1.1rem;
+}
+.char-row.main .char-avatar { background: linear-gradient(135deg, #f59e0b, #ef4444); }
+.char-name { font-weight: 600; }
+.char-role {
+    margin-left: .4rem; padding: .12rem .5rem; font-size: .7rem; border-radius: 999px;
+    background: #eef2f9; color: var(--text-mid);
+}
+.char-meta { margin-top: 2px; }
+
+/* ============================================================
+ * 章节迷你列表 + 章节网格
+ * ============================================================ */
+.chapter-mini {
+    display: flex; gap: .6rem; align-items: center; padding: .55rem .65rem;
+    border-radius: 8px; background: #f8fafc; margin-bottom: .35rem;
+    text-decoration: none; color: inherit; transition: background .15s;
+}
+.chapter-mini:hover { background: #eaf3ff; color: inherit; }
+.ch-num { font-weight: 600; color: var(--primary); flex-shrink: 0; }
+.ch-title { flex-grow: 1; font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ch-meta  { font-size: .75rem; color: var(--text-mid); }
+
+.ch-grid {
+    display: grid; gap: .65rem;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+}
+.ch-cell {
+    display: flex; flex-direction: column; gap: 4px; padding: .85rem .8rem;
+    border-radius: 12px; border: 1px solid var(--line); background: #fff;
+    text-decoration: none; color: inherit; transition: all .18s;
+    min-height: 80px;
+}
+.ch-cell.done { border-color: #b6e0c5; }
+.ch-cell.done:hover {
+    background: linear-gradient(135deg, #f0fdf4, #fff); transform: translateY(-3px);
+    box-shadow: 0 8px 18px rgba(40, 199, 111, .15);
+}
+.ch-cell.todo { background: #f8fafc; border-style: dashed; opacity: .65; }
+.ch-cell-num { font-size: .78rem; color: var(--primary); font-weight: 600; }
+.ch-cell-title { font-size: .9rem; line-height: 1.25; flex-grow: 1; overflow: hidden; }
+.ch-cell-meta { font-size: .72rem; color: var(--text-mid); }
+
+/* ============================================================
+ * 阅读卡
+ * ============================================================ */
+.reader-card {
+    background: #fff; border-radius: 14px; padding: 2.2rem 2.6rem;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, .04); border: 1px solid var(--line);
+    font-size: 1.02rem; line-height: 1.95; color: #1d2433;
+}
+.reader-card p { margin-bottom: 1.1rem; text-indent: 2em; }
+.reader-card p:last-child { margin-bottom: 0; }
+
+/* ============================================================
+ * 题材选卡 / 任务行
+ * ============================================================ */
+.genre-pick {
+    border: 1px solid var(--line); border-radius: 12px; padding: .85rem 1rem;
+    cursor: pointer; transition: all .15s; height: 100%;
+}
+.genre-pick:hover { border-color: var(--primary); background: #f0f7ff; }
+.genre-pick.active {
+    border-color: var(--primary); background: linear-gradient(135deg, #eaf3ff, #fff);
+    box-shadow: 0 4px 14px rgba(13, 110, 253, .15);
+}
+.genre-pick-name { font-weight: 600; }
+.genre-pick-desc { font-size: .82rem; color: var(--text-mid); margin-top: 4px; }
+
+.task-row {
+    padding: .85rem 1rem; background: #f8fafc; border-radius: 10px;
+    margin-bottom: .65rem; border: 1px solid var(--line);
 }
 
-.node-title {
-    font-size: 12px;
-    font-weight: 500;
-    color: #495057;
-    line-height: 1.2;
+/* ============================================================
+ * Loading & Toast
+ * ============================================================ */
+.loading-overlay {
+    position: fixed; inset: 0; background: rgba(255, 255, 255, .85);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 1090;
+}
+.loading-content { text-align: center; }
+
+/* ============================================================
+ * 章节阅读 / 编辑
+ * ============================================================ */
+.reader-editor {
+    font-family: ui-monospace, "Cascadia Code", "Consolas", "Microsoft YaHei", monospace;
+    font-size: .94rem;
+    line-height: 1.85;
+    min-height: 480px;
+    resize: vertical;
 }
 
-.node-badge {
-    font-size: 10px;
-    background: #17a2b8;
-    color: white;
-    padding: 2px 6px;
+/* ============================================================
+ * 编辑大页：tab + 配角行
+ * ============================================================ */
+.nav-tabs .nav-link {
+    color: var(--text-mid); font-weight: 500; border: none;
+    border-bottom: 3px solid transparent; padding: .75rem 1.2rem;
+}
+.nav-tabs .nav-link:hover { color: var(--primary); }
+.nav-tabs .nav-link.active {
+    background: transparent; color: var(--primary);
+    border-bottom-color: var(--primary);
+}
+
+.sup-row {
+    background: #f8fafc;
+    border: 1px solid var(--line);
+}
+.sup-row:hover { border-color: var(--primary); }
+
+/* 编辑模式可点击图标提示 */
+.btn-link i.fa-pen { transition: opacity .2s; opacity: .6; }
+.btn-link:hover i.fa-pen { opacity: 1; }
+
+/* ============================================================
+ * v2.2 主页过滤工具栏
+ * ============================================================ */
+.home-filter-search { width: 280px; }
+.home-filter-select { width: auto; min-width: 130px; }
+
+/* ============================================================
+ * v2.2 蓝图卷展开 + 章节卡 mini
+ * ============================================================ */
+.vol-clickable {
+    cursor: pointer;
+    transition: all .15s;
+}
+.vol-clickable:hover { border-color: var(--primary); background: #f0f7ff; }
+.vol-clickable.expanded {
+    background: linear-gradient(90deg, #eaf3ff, #fff);
+    border-color: var(--primary);
+}
+.vol-detail {
+    margin: -.4rem 0 .8rem;
+    padding: .6rem .8rem;
+    background: #f8fafc;
+    border: 1px dashed var(--line);
+    border-radius: 0 0 10px 10px;
+    border-top: none;
+    animation: slideDown .2s ease;
+}
+@keyframes slideDown {
+    from { opacity: 0; max-height: 0; }
+    to   { opacity: 1; max-height: 600px; }
+}
+
+.ch-card-mini {
+    background: #fff;
+    border: 1px solid var(--line);
     border-radius: 10px;
-    margin-top: 2px;
+    padding: .65rem .85rem;
+    margin-bottom: .6rem;
+    transition: border-color .15s;
+}
+.ch-card-mini:hover { border-color: var(--primary); }
+.ch-card-mini:last-child { margin-bottom: 0; }
+.ch-card-summary { line-height: 1.5; }
+.beat-item { padding: 1px 0; line-height: 1.55; }
+.ch-card-hook {
+    border-left: 3px solid var(--primary);
+    padding: .3rem .6rem;
+    background: #f0f7ff;
+    border-radius: 0 6px 6px 0;
+    color: #1d2433;
+    font-style: italic;
+}
+.ma-pill {
+    display: inline-flex; align-items: center;
+    padding: .15rem .55rem; border-radius: 10px;
+    font-size: .72rem; background: #f1f5f9; color: var(--text-mid);
+}
+.ma-pill.ma-c { background: #fef3c7; color: #92400e; }
+.ma-pill.ma-l { background: #dbeafe; color: #1e40af; }
+.ma-pill.ma-o { background: #dcfce7; color: #166534; }
+
+/* ============================================================
+ * v2.2 阅读器升级
+ * ============================================================ */
+.reader-toolbar {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: .85rem 1.1rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .03);
+    position: sticky; top: 0;
+    z-index: 50;
+}
+.reader-card {
+    transition: font-size .15s;
+}
+/* 顶部阅读进度条 */
+.reader-progress {
+    position: fixed; left: 0; top: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--primary), var(--primary-2));
+    z-index: 1100;
+    width: 0%;
+    transition: width .1s;
+}
+/* 必现项命中标记 */
+.ma-hit, .ma-miss {
+    display: inline-flex; align-items: center; gap: 3px;
+    padding: 2px 8px; border-radius: 999px; font-size: .76rem;
+    margin: 2px 4px 2px 0;
+}
+.ma-hit  { background: #dcfce7; color: #166534; }
+.ma-miss { background: #fee2e2; color: #991b1b; }
+.ma-hit i, .ma-miss i { font-size: .7rem; }
+kbd {
+    display: inline-block; min-width: 1.5em; padding: 1px 6px;
+    background: #f1f5f9; border: 1px solid #cbd5e1;
+    border-radius: 4px; font-size: .75rem; font-family: ui-monospace, monospace;
+    color: var(--text-mid); text-align: center;
 }
 
-.node-status {
-    font-size: 14px;
+/* 全屏阅读模式：藏 navbar / dock / 侧栏 */
+body.reader-fullscreen .navbar,
+body.reader-fullscreen #taskDock,
+body.reader-fullscreen #readerSide { display: none !important; }
+body.reader-fullscreen #readerMain { width: 100% !important; max-width: 800px; margin: 0 auto; }
+body.reader-fullscreen .reader-card { padding: 3rem 4rem; }
+body.reader-fullscreen .main-container { padding-top: 1rem !important; }
+
+/* ============================================================
+ * v2.2 吸底任务面板
+ * ============================================================ */
+.task-dock {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: #1f2937;
+    border-top: 3px solid var(--primary);
+    z-index: 1070;
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, .15);
+    max-height: 280px;
+    overflow-y: auto;
+}
+.task-dock-inner {
+    max-width: 1320px; margin: 0 auto;
+    padding: .65rem 1.4rem;
+    display: flex; flex-direction: column; gap: .6rem;
+}
+.task-dock-row {
+    display: flex; align-items: center; gap: .8rem;
+    color: #fff;
+    padding: .35rem 0;
+}
+.task-dock-icon {
+    width: 36px; height: 36px; border-radius: 50%;
+    background: rgba(13, 110, 253, .25); color: #6cb2eb;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+.task-dock-meta { min-width: 0; }
+.task-dock-meta .text-muted { color: #94a3b8 !important; }
+.task-dock-meta .progress { background: rgba(255, 255, 255, .12); }
+
+body.has-task-dock { padding-bottom: 100px; }
+
+/* ============================================================
+ * v2.2 保存后高亮（pulse）
+ * ============================================================ */
+.saved-flash {
+    animation: savedFlash .9s ease;
+}
+@keyframes savedFlash {
+    0%, 100% { box-shadow: none; }
+    30%      { box-shadow: 0 0 0 3px rgba(40, 199, 111, .55); }
 }
 
-.node-connector {
-    position: absolute;
-    top: 20px;
-    right: -15px;
-    width: 20px;
-    height: 2px;
-    background: #dee2e6;
-    z-index: 1;
+/* ============================================================
+ * v2.3 题材库
+ * ============================================================ */
+.genre-card {
+    cursor: pointer;
+    border-radius: 14px;
+    transition: transform .2s, box-shadow .2s, border-color .2s;
+    border: 1px solid var(--line);
+    overflow: hidden;
 }
-
-.process-node.completed + .process-node .node-connector {
-    background: #198754;
+.genre-card:hover {
+    transform: translateY(-3px);
+    border-color: var(--primary);
+    box-shadow: 0 12px 24px rgba(13, 110, 253, .12) !important;
 }
+.genre-card .card-title i { background: linear-gradient(135deg, var(--primary), var(--primary-2));
+    -webkit-background-clip: text; color: transparent; }
 
-@keyframes pulse {
-    0% { transform: scale(1); }
-    50% { transform: scale(1.1); }
-    100% { transform: scale(1); }
-}
-
-/* 响应式设计 */
+/* ============================================================
+ * 响应式
+ * ============================================================ */
 @media (max-width: 768px) {
-    .process-nodes {
-        flex-direction: column;
-        gap: 15px;
+    .workflow-timeline {
+        grid-template-columns: repeat(5, 1fr);
+        padding: 1rem .5rem;
     }
-    
-    .process-node {
-        flex-direction: row;
-        min-width: 100%;
-        justify-content: flex-start;
+    .workflow-timeline .timeline-track,
+    .workflow-timeline .timeline-track-done {
+        top: calc(1rem + 22px);
     }
-    
-    .node-icon {
-        margin-right: 15px;
-        margin-bottom: 0;
-    }
-    
-    .node-content {
-        text-align: left;
-        flex: 1;
-    }
-    
-    .node-connector {
-        display: none;
-    }
-}
-
-/* 续写优化选项样式 */
-.optimization-options {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    justify-content: center;
-}
-
-.optimization-options .btn {
-    font-size: 0.85rem;
-    padding: 6px 12px;
-}
-
-.completion-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    justify-content: center;
-    align-items: center;
-}
-
-.completion-actions .btn-lg {
-    min-width: 160px;
+    .stage-name { font-size: .78rem; }
+    .stage-sub { display: none; }
+    .acts-grid { grid-template-columns: 1fr; }
+    .reader-card { padding: 1.5rem 1.2rem; }
+    .ch-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
 }

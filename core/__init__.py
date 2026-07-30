@@ -6,9 +6,13 @@
 from .core_knowledge_manager import CoreKnowledgeManager
 from .dynamic_knowledge_manager import DynamicKnowledgeManager
 from .intelligent_context_selector import IntelligentContextSelector
+from .embedding_service import EmbeddingService
+from .vector_database import VectorDatabase
 
 __all__ = [
     'CoreKnowledgeManager',
     'DynamicKnowledgeManager', 
-    'IntelligentContextSelector'
+    'IntelligentContextSelector',
+    'EmbeddingService',
+    'VectorDatabase'
 ]

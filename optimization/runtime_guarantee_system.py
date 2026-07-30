@@ -9,6 +9,9 @@ import signal
 from typing import Dict, List, Any, Optional, Callable
 from datetime import datetime, timedelta
 import concurrent.futures
+from utils.logger import get_logger
+
+logger = get_logger("runtime_guarantee_system")
 
 
 class RuntimeGuaranteeSystem:
@@ -272,7 +275,7 @@ class RuntimeGuaranteeSystem:
                     del self.active_tasks[task_id]
                     
         except Exception as e:
-            print(f"清理已完成任务失败: {e}")
+            logger.error(f"清理已完成任务失败: {e}")
     
     def get_runtime_stats(self) -> Dict[str, Any]:
         """获取运行时统计"""
@@ -300,7 +303,7 @@ class RuntimeGuaranteeSystem:
                 }
                 
         except Exception as e:
-            print(f"获取运行时统计失败: {e}")
+            logger.error(f"获取运行时统计失败: {e}")
             return {}
     
     def set_timeout_handler(self, task_type: str, handler: Callable):
@@ -311,6 +314,7 @@ class RuntimeGuaranteeSystem:
         """启动清理定时器"""
         try:
             import threading
+            
             def cleanup_worker():
                 while True:
                     time.sleep(300)  # 每5分钟清理一次
@@ -319,11 +323,11 @@ class RuntimeGuaranteeSystem:
             self.cleanup_timer = threading.Thread(target=cleanup_worker, daemon=True)
             self.cleanup_timer.start()
         except Exception as e:
-            print(f"启动清理定时器失败: {e}")
+            logger.error(f"启动清理定时器失败: {e}")
     
     def __del__(self):
         """析构函数"""
         try:
             self.cleanup_completed_tasks()
         except Exception as e:
-            print(f"清理任务失败: {e}")
+            logger.error(f"清理任务失败: {e}")

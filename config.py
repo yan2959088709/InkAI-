@@ -1,22 +1,111 @@
 """
 InkAI 小说创作系统配置文件
+
+配置优先级：环境变量 > 默认值（dashscope preset）
+开源用户请设置环境变量：
+  INKAI_API_KEY (必需)
+  INKAI_PROVIDER (可选，dashscope/deepseek/openai，默认 dashscope)
+  INKAI_EMBEDDING_API_KEY (LLM 非 dashscope 时必需)
 """
 import os
-from typing import Dict, List
+from typing import Any, Dict, List
+from urllib.parse import urlparse
 
-# API配置
-API_KEY = "your_glm_api_key_here"
-MODEL_NAME = "glm-4.5-flash"
-TEMPERATURE = 0.6
+
+# Provider 预设（支持多 LLM 提供商，embedding/rerank 独立配置）
+PROVIDER_PRESETS: Dict[str, Dict[str, str]] = {
+    "dashscope": {
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model": "qwen3.6-plus",
+        "embedding_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "embedding_model": "text-embedding-v3",
+    },
+    "deepseek": {
+        "base_url": "https://api.deepseek.com/v1",
+        "model": "deepseek-chat",
+        # DeepSeek 不提供 embedding，回退到 dashscope
+        "embedding_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "embedding_model": "text-embedding-v3",
+    },
+    "openai": {
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-4o-mini",
+        "embedding_base_url": "https://api.openai.com/v1",
+        "embedding_model": "text-embedding-3-small",
+    },
+}
+
+
+def _load_provider() -> str:
+    """加载 provider：环境变量 > 默认 dashscope。"""
+    provider = os.environ.get("INKAI_PROVIDER", "").strip().lower()
+    if provider not in PROVIDER_PRESETS:
+        provider = "dashscope"
+    return provider
+
+
+PROVIDER = _load_provider()
+_preset = PROVIDER_PRESETS[PROVIDER]
+
+# API配置 - 支持 multi-provider
+API_KEY = os.environ.get("INKAI_API_KEY", "")
+BASE_URL = os.environ.get("INKAI_BASE_URL", "") or _preset["base_url"]
+
+# 模型配置
+MODEL_NAME = os.environ.get("INKAI_MODEL", "") or _preset["model"]
+BACKUP_MODEL = "qwen-max"
+TEMPERATURE = 0.7
 
 # Token配置
-MAX_TOKENS = 8192  # GLM-4.5-flash的最大输出token数
-CHAPTER_MAX_TOKENS = 8192  # 章节写作专用的最大token数
+MAX_TOKENS = 32768
+CHAPTER_MAX_TOKENS = 32768
 
-# 嵌入模型配置 (用于续写功能)
-EMBEDDING_API_KEY = "your_embedding_api_key_here"
-EMBEDDING_BASE_URL = "https://api.siliconflow.cn/v1"
-EMBEDDING_MODEL = "BAAI/bge-m3"
+# 上下文窗口配置
+MAX_CONTEXT_TOKENS = 900000
+
+# 长上下文模式配置
+USE_LONG_CONTEXT_MODE = True
+LONG_CONTEXT_RECENT_CHAPTERS = 20
+
+# 嵌入模型配置 - 独立 key，不强制与主 LLM 同 provider（修复 Issue #2: DeepSeek 配置后 embedding 失败）
+EMBEDDING_API_KEY = os.environ.get("INKAI_EMBEDDING_API_KEY", "") or API_KEY
+EMBEDDING_BASE_URL = (
+    os.environ.get("INKAI_EMBEDDING_BASE_URL", "") or _preset["embedding_base_url"]
+)
+EMBEDDING_MODEL = (
+    os.environ.get("INKAI_EMBEDDING_MODEL", "") or _preset.get("embedding_model", "text-embedding-v3")
+)
+
+# 重排序模型配置 - 复用 embedding key
+RERANK_API_KEY = os.environ.get("INKAI_RERANK_API_KEY", "") or EMBEDDING_API_KEY
+RERANK_BASE_URL = os.environ.get("INKAI_RERANK_BASE_URL", "") or EMBEDDING_BASE_URL
+RERANK_MODEL = "gte-rerank"
+
+
+def _compute_embedding_status() -> Dict[str, str]:
+    """诊断 embedding 配置：embedding 与 LLM 跨 host 且复用 key 时警告。"""
+    if not EMBEDDING_API_KEY:
+        return {"status": "error", "message": "未配置 embedding API key，知识图谱/语义检索不可用"}
+    llm_host = urlparse(BASE_URL).netloc
+    emb_host = urlparse(EMBEDDING_BASE_URL).netloc
+    if llm_host != emb_host and EMBEDDING_API_KEY == API_KEY:
+        return {
+            "status": "warning",
+            "message": (
+                f"LLM provider={PROVIDER}（{llm_host}），embedding 回退到 {emb_host}，"
+                f"但复用了 LLM key。{llm_host} 的 key 不能用于 {emb_host}，"
+                f"请配 INKAI_EMBEDDING_API_KEY（{emb_host} 的 key）。"
+            ),
+        }
+    return {"status": "ok", "message": ""}
+
+
+EMBEDDING_STATUS = _compute_embedding_status()
+
+# Milvus向量数据库配置
+MILVUS_HOST = "localhost"
+MILVUS_PORT = "19530"
+MILVUS_COLLECTION_NAME = "inkai_vectors"
 
 # 标签配置
 TAG_CATEGORIES = {
@@ -76,8 +165,9 @@ QUALITY_DIMENSIONS = {
 DATA_DIR = "data"
 NOVELS_DIR = os.path.join(DATA_DIR, "novels")
 KNOWLEDGE_GRAPHS_DIR = os.path.join(DATA_DIR, "knowledge_graphs")
+GENRES_DIR = os.path.join(DATA_DIR, "genres")
 TEMPLATES_DIR = "templates"
 
 # 确保目录存在
-for directory in [DATA_DIR, NOVELS_DIR, KNOWLEDGE_GRAPHS_DIR, TEMPLATES_DIR]:
+for directory in [DATA_DIR, NOVELS_DIR, KNOWLEDGE_GRAPHS_DIR, GENRES_DIR, TEMPLATES_DIR]:
     os.makedirs(directory, exist_ok=True)

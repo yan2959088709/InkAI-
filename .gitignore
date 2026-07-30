@@ -69,8 +69,3 @@ Thumbs.db
 # 临时文件
 *.tmp
 *.temp
-# 用户生成数据
-data/novels/*
-data/knowledge_graphs/*
-!data/novels/.gitkeep
-!data/knowledge_graphs/.gitkeep

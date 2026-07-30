@@ -6,6 +6,8 @@
 from base_agent import BaseAgent
 from typing import Dict, List, Any, Optional
 import config
+from utils.logger import get_logger
+logger = get_logger("novel_storyline_improver")
 
 
 class NovelStorylineImprover(BaseAgent):
@@ -28,15 +30,15 @@ class NovelStorylineImprover(BaseAgent):
         
         # 如果没有改进建议，使用默认建议
         if not improvement_suggestions or len(improvement_suggestions) == 0:
-            print("没有改进建议，使用默认改进策略")
+            logger.info("没有改进建议，使用默认改进策略")
             improvement_suggestions = ["提升故事线的逻辑性和连贯性", "增强情节的吸引力", "优化人物发展轨迹"]
         
         # 添加调试信息
-        print(f"故事线改进输入数据检查:")
-        print(f"  - current_storyline 类型: {type(current_storyline)}")
-        print(f"  - improvement_suggestions 数量: {len(improvement_suggestions)}")
-        print(f"  - characters: {bool(characters)}")
-        print(f"  - user_requirements: {bool(user_requirements)}")
+        logger.debug(f"故事线改进输入数据检查:")
+        logger.info(f"  - current_storyline 类型: {type(current_storyline)}")
+        logger.info(f"  - improvement_suggestions 数量: {len(improvement_suggestions)}")
+        logger.info(f"  - characters: {bool(characters)}")
+        logger.info(f"  - user_requirements: {bool(user_requirements)}")
         
         # 生成改进后的故事线
         improved_storyline = self._improve_storyline(

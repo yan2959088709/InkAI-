@@ -10,6 +10,8 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
 import json
 import os
+from utils.logger import get_logger
+logger = get_logger("performance_monitor")
 
 
 class PerformanceMonitor:
@@ -60,14 +62,14 @@ class PerformanceMonitor:
             self.monitoring_thread = threading.Thread(target=self._monitoring_loop)
             self.monitoring_thread.daemon = True
             self.monitoring_thread.start()
-            print("性能监控已启动")
+            logger.info("性能监控已启动")
     
     def stop_monitoring(self):
         """停止性能监控"""
         self.monitoring_active = False
         if self.monitoring_thread:
             self.monitoring_thread.join()
-        print("性能监控已停止")
+        logger.info("性能监控已停止")
     
     def _monitoring_loop(self):
         """监控循环"""
@@ -88,7 +90,7 @@ class PerformanceMonitor:
                 time.sleep(self.monitoring_interval)
                 
             except Exception as e:
-                print(f"性能监控循环出错: {e}")
+                logger.info(f"性能监控循环出错: {e}")
                 time.sleep(self.monitoring_interval)
     
     def _collect_system_metrics(self) -> Dict[str, Any]:
@@ -106,7 +108,7 @@ class PerformanceMonitor:
             try:
                 disk = psutil.disk_usage('.')
                 disk_usage = (disk.used / disk.total) * 100
-            except:
+            except Exception as e:
                 disk_usage = 0
             
             # 网络IO
@@ -116,7 +118,7 @@ class PerformanceMonitor:
                     "bytes_sent": network.bytes_sent,
                     "bytes_recv": network.bytes_recv
                 }
-            except:
+            except Exception as e:
                 network_io = {"bytes_sent": 0, "bytes_recv": 0}
             
             # 活跃线程数
@@ -133,7 +135,7 @@ class PerformanceMonitor:
             }
             
         except Exception as e:
-            print(f"收集系统指标失败: {e}")
+            logger.error(f"收集系统指标失败: {e}")
             # 返回默认值而不是空字典
             return {
                 "cpu_usage": 0,
@@ -166,7 +168,7 @@ class PerformanceMonitor:
                     )
                 
         except Exception as e:
-            print(f"记录任务执行失败: {e}")
+            logger.error(f"记录任务执行失败: {e}")
     
     def record_llm_call(self, response_time: float, success: bool = True, 
                        tokens_used: int = 0):
@@ -190,7 +192,7 @@ class PerformanceMonitor:
                     )
                 
         except Exception as e:
-            print(f"记录LLM调用失败: {e}")
+            logger.error(f"记录LLM调用失败: {e}")
     
     def get_current_metrics(self) -> Dict[str, Any]:
         """获取当前指标"""
@@ -226,7 +228,7 @@ class PerformanceMonitor:
                 }
                 
         except Exception as e:
-            print(f"获取性能摘要失败: {e}")
+            logger.error(f"获取性能摘要失败: {e}")
             return {}
     
     def get_performance_history(self, duration_minutes: int = 60) -> List[Dict[str, Any]]:
@@ -240,7 +242,7 @@ class PerformanceMonitor:
                 ]
                 
         except Exception as e:
-            print(f"获取性能历史数据失败: {e}")
+            logger.error(f"获取性能历史数据失败: {e}")
             return []
     
     def get_performance_alerts(self) -> List[Dict[str, Any]]:
@@ -301,7 +303,7 @@ class PerformanceMonitor:
             return alerts
             
         except Exception as e:
-            print(f"获取性能告警失败: {e}")
+            logger.error(f"获取性能告警失败: {e}")
             return []
     
     def export_performance_data(self, file_path: str):
@@ -319,10 +321,10 @@ class PerformanceMonitor:
                 with open(file_path, 'w', encoding='utf-8') as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
                 
-                print(f"性能数据已导出到: {file_path}")
+                logger.info(f"性能数据已导出到: {file_path}")
                 
         except Exception as e:
-            print(f"导出性能数据失败: {e}")
+            logger.error(f"导出性能数据失败: {e}")
     
     def reset_stats(self):
         """重置统计信息"""
@@ -349,7 +351,7 @@ class PerformanceMonitor:
                 self.start_time = time.time()
                 
         except Exception as e:
-            print(f"重置统计信息失败: {e}")
+            logger.error(f"重置统计信息失败: {e}")
     
     def __del__(self):
         """析构函数"""

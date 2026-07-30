@@ -5,80 +5,81 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-# Start the web server
-python start_web.py             # → http://localhost:5000
+# Web server (primary interface)
+python server.py                    # Starts on http://127.0.0.1:5000
 
-# Or run the app directly
-python app.py                   # Flask on port 5000
+# New pipeline CLI (recommended workflow)
+python run_init_novel.py --genre xianxia --title "九霄道行" --protagonist "林朝歌"
+python run_outline_demo.py --novel-id <id>
+python run_chapter_demo.py --novel-id <id> --start-chapter 1 --end-chapter 10
 
-# Legacy CLI entry point
-python main.py                  # Interactive terminal workflow
+# Validation
+python run_validate_canon.py --novel-id <id>
+python run_validate_volume.py --novel-id <id> --volume 1
+python run_full_novel_audit.py --novel-id <id>
 ```
 
-There is no test suite or linting configuration. Verify changes by starting the server and exercising the web UI manually.
+There is no test suite. Verify changes by starting the server and exercising the web UI, or by running the CLI pipeline on a test novel.
 
 ## Architecture
 
-A monolithic Flask + multi-agent pipeline for AI-assisted long-form fiction generation. The system reads intent from a user, then runs a fixed sequence of LLM-powered agents to produce novel chapters.
+**New pipeline** (recommended): independent CLI scripts that read from and write to disk. State is stored as JSON under `data/novels/<novel_id>/`.
 
 ### Core files
 
-- **`app.py`** (1496 lines) — Flask API + web server. Serves the frontend SPA and exposes the REST API. All client interaction flows through here.
-- **`inkai_workflow_optimized.py`** (1649 lines) — The core orchestrator (`InkAIWorkflowOptimized`). A 140KB state machine that sequences agent calls for both the creation pipeline (tags → characters → storyline → chapter) and the continuation pipeline (knowledge base → continuation storyline → continuation chapter → quality assessment).
-- **`quick_continuation_executor.py`** (900 lines) — Async continuation engine. Runs the per-chapter generation loop in background threads with progress tracking.
-- **`data_manager.py`** (1024 lines) — Persistence layer. All state is stored as JSON files under `data/novels/<uuid>/`. No database.
-- **`workflow_context.py`** (417 lines) — Mutable context object passed between workflow steps. Holds novel ID, tags, characters, storyline, and caching state.
-- **`base_agent.py`** (351 lines) — Abstract base class for all agents. Provides `call_llm()` (3 retries with exponential backoff, raises on final failure) and `parse_json_response()`. Uses the OpenAI-compatible client pointed at Zhipu AI GLM-4.5-flash.
-- **`config.py`** — API keys, model name, quality thresholds, tag library, and file paths. Module-level `os.makedirs` runs at import time.
+- **`server.py`** - Flask API + web server. Serves the frontend SPA and exposes the REST API. All client interaction flows through here.
+- **`base_agent.py`** - Abstract base class for all agents. Provides `call_llm()` (3 retries with exponential backoff, raises `RuntimeError` on final failure) and `parse_json_response()`. Includes prompt cache hit diagnostics (DeepSeek `prompt_cache_hit_tokens` / OpenAI `cached_tokens`).
+- **`config.py`** - Multi-provider config (dashscope / deepseek / openai) via `PROVIDER_PRESETS`. Embedding/rerank have independent API keys (`INKAI_EMBEDDING_API_KEY`) to avoid cross-provider key reuse failures. Module-level `os.makedirs` runs at import time.
+- **`agents/chapter_card_writer.py`** - `ChapterCardWriter`: writes individual chapter text from ChapterCard. Validates word count (±20%, hard cap +30%), protagonist presence (≥2 mentions), must_appear coverage (hard fail for characters/objects). System prompt is static (enables LLM prompt caching); dynamic content (banned_endings, target_word_count) goes in user prompt.
+- **`core/outline_planner.py`** - `OutlinePlanner`: generates blueprints and volume chapter cards via LLM. Accepts optional `GenrePack` for genre-aware planning.
+- **`core/dynamic_knowledge_manager.py`** - DKM: tracks cross-chapter state (foreshadowing, character appearances, currently-held objects, locations). Call `load_state()` after instantiation; `save_state()` after each chapter.
+- **`core/cross_chapter_dedup.py`** - Scans prior chapters for high-frequency phrase fingerprints, injects into banned list for next chapter.
 
-### Agents (`agents/`, 26 files)
-
-25 specialized agents, each implementing `BaseAgent`:
+### Agents (`agents/`, 33 files)
 
 | Group | Count | Purpose |
 |-------|-------|---------|
-| Creation | 5 | Tag selection, character creator, storyline generator, chapter writer, quality assessor |
-| Continuation | 3 | Novel continuation agent, continuation storyline generator, continuation chapter writer |
+| Creation | 10 | Tag selection, character creator, storyline generator, chapter writer (legacy + new ChapterCardWriter), volume validator, etc. |
+| Continuation | 4 | Novel continuation agent, continuation storyline/chapter/improver |
 | Assessment | 6 | Per-dimension consistency auditors (character, plot, world, style, reader experience, long-term) |
-| Improvement | 11 | Targeted fixers — one per dimension, plus chapter improver, storyline improver, character improver |
+| Improvement | 6 | Targeted fixers - one per assessment dimension |
+| Base | 2 | base_continuation_assessor, base_continuation_improver |
+| Other | 5 | character_improver, novel_storyline_improver, chapter_summary_generator, enhanced_character_analyzer, etc. |
 
-Agent input/output contracts are defined in each agent's `process()` method. There is no formal schema enforcement — agents pass `Dict[str, Any]` and rely on LLM JSON parsing.
+Agent input/output contracts are defined in each agent's `process()` method. No formal schema enforcement - agents pass `Dict[str, Any]` and rely on LLM JSON parsing.
 
 ### Frontend
 
-Single-page Bootstrap 5 app at `frontend/index.html` + `frontend/app.js` + `frontend/styles.css`. The JS is a single large file (~313KB) with inline event handlers (no framework). It calls the Flask API and renders responses directly into DOM via `innerHTML`.
+Single-page Bootstrap 5 + Chart.js app at `frontend/index.html` + `frontend/app.js` + `frontend/styles.css`. Hash-based routing. All API calls go through `Util.req()` which prepends `/api`.
 
 ### Data model
 
-Each novel lives at `data/novels/<uuid>/`:
+Each novel lives at `data/novels/<novel_id>/`:
 
 | File | Content |
 |------|---------|
 | `metadata.json` | Title, status, timestamps |
-| `tags.json` | Selected genre tags |
 | `characters.json` | Main character + supporting cast |
 | `storyline.json` | Three-act structure, world setting |
-| `chapter_*.json` | Per-chapter metadata and content |
-| `chapter_*.txt` | Chapter prose text |
-| `*_quality_assessment.json` | Quality audit results |
-
-Knowledge graphs are stored separately at `data/knowledge_graphs/<id>.json`.
-
-### Pipeline flows
-
-**Creation**: User input → TagSelector → CharacterCreator → StorylineGenerator → ChapterWriter → QualityAssessor → save
-
-**Continuation**: NovelContinuationAgent (build knowledge base) → ContinuationStorylineGenerator → ContinuationChapterWriter → assess → improve if below threshold → save → repeat
+| `outline/blueprint.json` | Whole-novel blueprint (name_whitelist, global_foreshadow_ledger) |
+| `outline/volume_<N>_chapters.json` | Volume chapter cards |
+| `chapters_demo/chapter_<N>.txt` | Chapter prose |
+| `chapters_demo/chapter_<N>.meta.json` | Chapter metadata + validation |
+| `dynamic_state/state.json` | DKM state (foreshadowing, character holds, locations) |
+| `annotations.json` | Reader annotations |
+| `validation/volume_<N>_report.json` | Volume validation report |
 
 ### LLM provider
 
-Zhipu AI (智谱) GLM-4.5-flash via OpenAI-compatible endpoint. The `base_agent.py` creates an `OpenAI` client pointed at the Zhipu base URL. No streaming support. Max 8192 output tokens per call.
+Multi-provider via OpenAI-compatible client. Configured by `INKAI_PROVIDER` env var (dashscope / deepseek / openai, default dashscope). Embedding/rerank use independent keys (`INKAI_EMBEDDING_API_KEY`) since not all providers offer embedding.
+
+### Rate limiting
+
+`core/api_rate_limiter.py` enforces max 2 concurrent LLM calls with 1-second minimum intervals.
 
 ### Key limitations
 
-- **No concurrency control for shared state**: `data_manager.py` writes JSON files without any file locking. Concurrent chapter generation or web requests could corrupt novel data.
-- **Monolithic state machine**: `inkai_workflow_optimized.py` is the bottleneck. All workflow logic is hardcoded in one class with no plugin or extension mechanism.
-- **No rate limiting at the application level**: Relies entirely on the LLM provider's rate limits.
-- **No input validation on API endpoints**: `app.py` passes raw request payloads directly to agents without schema validation or sanitization.
-- **Module-level side effects**: `config.py` creates directories on import. Importing the config module in a read-only environment will fail.
-- **Embedding service is a stub**: The `core/` modules reference `EmbeddingService` but there is no actual embedding implementation in this version. Background tasks that require embeddings will fail silently.
+- **No concurrency control for shared state**: `data_manager.py` writes JSON files without file locking. Concurrent chapter generation could corrupt novel data.
+- **No input validation on some API endpoints**: `server.py` passes raw request payloads to agents without schema validation.
+- **Module-level side effects**: `config.py` creates directories on import. Importing in a read-only environment will fail.
+- **Legacy pipeline retained**: `inkai_workflow_optimized.py` (140KB monolith) is frozen but kept for rollback safety. New pipeline is the only recommended path.

@@ -1,6230 +1,2186 @@
-// InkAI 小说创作系统前端应用
+/* ============================================================
+ * InkAI Frontend v2.1 —— 彻底可交互版
+ *
+ * 修复 v2.0 三大问题：
+ *  1. hash 不变时 route 不触发 → 全部跳转走 App.go() 强制刷新
+ *  2. 5 阶段时间轴连线乱跑 → 改用 flex + 容器底层伪元素 SVG-like 横线
+ *  3. 没有编辑能力 → 加 metadata / characters / storyline / chapter 编辑
+ *
+ * 路由：
+ *   #/                       主页（小说列表 + 新建）
+ *   #/novel/:id              单本工作流
+ *   #/novel/:id/chapters     章节网格
+ *   #/novel/:id/chapter/:n   单章阅读 + 编辑切换
+ *   #/novel/:id/audit        全本审计（雷达图）
+ *   #/novel/:id/edit         小说信息编辑（meta/角色/storyline）
+ * ============================================================ */
 
-// InkAI 前端应用已加载
-console.log('InkAI 前端应用开始加载...');
-console.log('JavaScript语法检查通过');
-
-// 全局状态管理
-const AppState = {
-    currentPage: 'welcome',
+const API = "/api";
+const State = {
+    genres: [],
+    novels: [],
     currentNovelId: null,
-    selectedNovelId: null,
-    workflowData: null,
-    continuationData: null
+    currentNovel: null,
+    pollers: {},
+    chartInstances: {},
+    /* v2.2 新增 */
+    homeFilter: { q: "", sort: "updated_desc", stage: "all" },
+    reader: { fontSize: 17, fullscreen: false },   // 阅读器偏好（启动时从 localStorage 读）
+    runningTaskIds: new Set(),                      // 用于 dock 显示
+    activeTaskOnNovel: {},                          // novelId -> taskId（防重复跑）
+    bp: { expandedVolume: null },                   // 蓝图当前展开的卷
+    bpVolumeCards: {},                              // novelId -> volumeIdx -> chapter_cards (缓存)
 };
 
-console.log('AppState 初始化完成:', AppState);
+/* 启动时从 localStorage 恢复偏好 */
+try {
+    const saved = JSON.parse(localStorage.getItem("inkai_reader_prefs") || "{}");
+    if (saved.fontSize) State.reader.fontSize = saved.fontSize;
+} catch (_) {}
 
-// API 基础URL
-const API_BASE = '/api';
+/* ============== 工具 ============== */
+const Util = {
+    async req(path, opts = {}) {
+        const r = await fetch(API + path, {
+            headers: { "Content-Type": "application/json", "Cache-Control": "no-cache" },
+            ...opts,
+        });
+        let j;
+        try { j = await r.json(); } catch (_) { j = { ok: false, error: `HTTP ${r.status}` }; }
+        if (!r.ok || !j.ok) throw new Error(j.error || `请求失败 (HTTP ${r.status})`);
+        return j.data;
+    },
+    get(path) { return this.req(path); },
+    post(path, body) { return this.req(path, { method: "POST", body: JSON.stringify(body || {}) }); },
+    put(path, body) { return this.req(path, { method: "PUT", body: JSON.stringify(body || {}) }); },
+    del(path) { return this.req(path, { method: "DELETE" }); },
 
-// 工具函数
-const Utils = {
-    // 生成质量评估HTML
-    generateQualityAssessmentHTML: (qualityAssessment, showTitle = true) => {
-        if (!qualityAssessment) return '';
-        
-        const titleHTML = showTitle ? '<h6><i class="fas fa-star me-2"></i>质量评估</h6>' : '';
-        const scoreClass = qualityAssessment.overall_score >= 80 ? 'high' : qualityAssessment.overall_score >= 60 ? 'medium' : 'low';
-        
-        return `
-            ${titleHTML}
-            <div class="quality-assessment mb-3">
-                <div class="quality-score ${scoreClass}">
-                    <i class="fas fa-star me-2"></i>
-                    质量评分: ${qualityAssessment.overall_score}分
+    showLoading(msg = "处理中…") {
+        document.getElementById("loadingMsg").textContent = msg;
+        document.getElementById("loadingOverlay").style.display = "flex";
+    },
+    hideLoading() { document.getElementById("loadingOverlay").style.display = "none"; },
+    toast(msg, type = "info", ttl = 3500) {
+        const map = { info: "primary", success: "success", warn: "warning", error: "danger" };
+        const icon = { info: "info-circle", success: "check-circle", warn: "exclamation-triangle", error: "exclamation-circle" };
+        const id = "toast-" + Date.now() + Math.random().toString(36).slice(2, 6);
+        const html = `
+            <div class="toast text-bg-${map[type] || "primary"} border-0" role="alert" id="${id}">
+                <div class="d-flex">
+                    <div class="toast-body"><i class="fas fa-${icon[type] || "info-circle"} me-2"></i>${this.escape(msg)}</div>
+                    <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
                 </div>
-                ${qualityAssessment.suggestions && qualityAssessment.suggestions.length > 0 ? `
-                    <div class="quality-suggestions mt-2">
-                        <h6 class="text-warning">改进建议:</h6>
-                        <ul class="suggestions-list">
-                            ${qualityAssessment.suggestions.map(suggestion => `<li>${suggestion}</li>`).join('')}
-                        </ul>
-                    </div>
-                ` : ''}
-            </div>
-        `;
+            </div>`;
+        const c = document.getElementById("toastContainer");
+        c.insertAdjacentHTML("beforeend", html);
+        const el = document.getElementById(id);
+        const t = new bootstrap.Toast(el, { delay: ttl });
+        t.show();
+        el.addEventListener("hidden.bs.toast", () => el.remove());
     },
-    // 格式化章节内容
-    formatChapterContent: (content) => {
-        if (!content) return '';
-        // 先处理转义的换行符，再转换为HTML换行
-        return content.replace(/\\n/g, '\n').replace(/\n/g, '<br>');
+    fmtTs(ts) {
+        if (!ts) return "";
+        const d = new Date(ts * 1000);
+        const pad = (n) => String(n).padStart(2, "0");
+        return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
     },
-    // 通用API调用方法
-    callNovelAPI: async (novelId, endpoint, method = 'GET', data = null) => {
-        const options = { method };
-        if (data) {
-            options.body = JSON.stringify(data);
-        }
-        return await Utils.apiRequest(`/novels/${novelId}${endpoint}`, options);
+    escape(s) {
+        if (s == null) return "";
+        return String(s).replace(/[&<>"']/g, c =>
+            ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     },
-    // 显示加载状态
-    showLoading: (message = '正在处理中，请稍候...') => {
-        const overlay = document.getElementById('loading-overlay');
-        const content = overlay.querySelector('.loading-content p');
-        content.textContent = message;
-        overlay.style.display = 'flex';
+    paragraphize(text) {
+        if (!text) return "";
+        return text.split(/\n+/).map(p => p.trim()).filter(Boolean)
+            .map(p => `<p>${this.escape(p)}</p>`).join("");
     },
-
-    // 隐藏加载状态
-    hideLoading: () => {
-        document.getElementById('loading-overlay').style.display = 'none';
+    confirm(msg) { return window.confirm(msg); },
+    /* 销毁所有 chart 防止残留 canvas 报错 */
+    destroyCharts() {
+        Object.values(State.chartInstances).forEach(c => { try { c.destroy(); } catch (_) {} });
+        State.chartInstances = {};
     },
-
-    // 显示消息提示
-    showMessage: (message, type = 'info', duration = 5000) => {
-        const container = document.getElementById('message-container');
-        const alertId = 'alert-' + Date.now();
-        
-        const alertHtml = `
-            <div id="${alertId}" class="alert alert-${type} alert-dismissible fade show" role="alert">
-                <i class="fas fa-${type === 'success' ? 'check-circle' : type === 'error' ? 'exclamation-circle' : 'info-circle'} me-2"></i>
-                ${message}
-                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-            </div>
-        `;
-        
-        container.insertAdjacentHTML('beforeend', alertHtml);
-        
-        // 自动移除
-        setTimeout(() => {
-            const alert = document.getElementById(alertId);
-            if (alert) {
-                alert.remove();
-            }
-        }, duration);
-    },
-
-    // API 请求封装
-    apiRequest: async (url, options = {}) => {
-        try {
-            // 添加时间戳防止缓存
-            const separator = url.includes('?') ? '&' : '?';
-            const timestampedUrl = url + separator + '_t=' + Date.now();
-            
-            const response = await fetch(API_BASE + timestampedUrl, {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Cache-Control': 'no-cache',
-                    ...options.headers
-                },
-                ...options
-            });
-            
-            // 检查响应状态
-            if (!response.ok) {
-                let errorMessage = '请求失败';
-                try {
-                    const errorData = await response.json();
-                    errorMessage = errorData.error || errorMessage;
-                } catch (e) {
-                    // 如果响应不是JSON格式，使用状态文本
-                    errorMessage = response.statusText || errorMessage;
-                }
-                throw new Error(`${response.status}: ${errorMessage}`);
-            }
-            
-            const data = await response.json();
-            
-            // 检查业务逻辑错误
-            if (data && data.success === false) {
-                throw new Error(data.error || '操作失败');
-            }
-            
-            return data;
-        } catch (error) {
-            console.error('API请求错误:', error);
-            
-            // 网络错误处理
-            if (error.name === 'TypeError' && error.message.includes('fetch')) {
-                throw new Error('网络连接失败，请检查网络设置');
-            }
-            
-            // 超时错误处理
-            if (error.name === 'AbortError') {
-                throw new Error('请求超时，请稍后重试');
-            }
-            
-            throw error;
-        }
-    },
-
-    // 格式化日期
-    formatDate: (dateString) => {
-        if (!dateString) return '未知时间';
-        
-        const date = new Date(dateString);
-        if (isNaN(date.getTime())) {
-            return '时间格式错误';
-        }
-        
-        return date.toLocaleDateString('zh-CN', {
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit'
+    /* 关掉所有打开中的 modal（导航前清理） */
+    closeAllModals() {
+        document.querySelectorAll(".modal.show").forEach(el => {
+            const m = bootstrap.Modal.getInstance(el);
+            if (m) m.hide();
         });
     },
-
-    // 格式化字数
-    formatWordCount: (count) => {
-        if (count >= 10000) {
-            return (count / 10000).toFixed(1) + '万';
-        }
-        return count.toString();
-    }
+    /* 给一个元素加保存高亮 */
+    flash(selector) {
+        const el = document.querySelector(selector);
+        if (!el) return;
+        el.classList.remove("saved-flash");
+        // 强制 reflow 重启动画
+        void el.offsetWidth;
+        el.classList.add("saved-flash");
+        setTimeout(() => el.classList.remove("saved-flash"), 1000);
+    },
 };
 
-// 页面切换函数
-const Navigation = {
-    showPage: (pageId) => {
-        // 隐藏所有页面
-        document.querySelectorAll('.page').forEach(page => {
-            page.style.display = 'none';
-        });
-        
-        // 显示目标页面
-        const targetPage = document.getElementById(pageId);
-        if (targetPage) {
-            targetPage.style.display = 'block';
-            AppState.currentPage = pageId;
-        }
-    },
-
-    showWelcome: () => {
-        Navigation.showPage('welcome-page');
-    },
-
-    showCreateNovel: () => {
-        Navigation.showPage('create-novel-page');
-    },
-
-    showContinueNovel: () => {
-        console.log('showContinueNovel 被调用');
-        Navigation.showPage('continue-novel-page');
-        console.log('页面已切换到 continue-novel-page');
-        NovelManager.loadContinuationNovelList();
-        console.log('loadContinuationNovelList 已调用');
-    },
-
-    showNovelList: () => {
-        Navigation.showPage('novel-list-page');
-        NovelManager.loadNovelList();
-    },
-
-    showCreationWorkflow: (novelId) => {
-        AppState.currentNovelId = novelId;
-        Navigation.showPage('creation-workflow-page');
-        WorkflowManager.loadCreationWorkflow(novelId);
-    },
-
-    showContinuationWorkflow: (novelId) => {
-        AppState.currentNovelId = novelId;
-        Navigation.showPage('continuation-workflow-page');
-        ContinuationManager.loadContinuationWorkflow(novelId);
-    },
-
-    // 导航辅助函数
-    goToHome: () => {
-        Navigation.showWelcome();
-    },
-
-    goToNovelList: () => {
-        Navigation.showNovelList();
-    },
-
-    goToContinuationNovelList: () => {
-        Navigation.showContinueNovel();
-    },
-
-    showQuickContinuationProgress: (novelId) => {
-        AppState.currentNovelId = novelId;
-        Navigation.showPage('quick-continuation-progress-page');
-        QuickContinuationManager.loadProgress(novelId);
+/* ============== 路由 ============== */
+function parseHash() {
+    const h = (location.hash || "#/").replace(/^#/, "");
+    const parts = h.split("/").filter(Boolean);
+    if (parts.length === 0) return { name: "home" };
+    if (parts[0] === "novel" && parts[1]) {
+        if (parts[2] === "chapter" && parts[3]) return { name: "chapter", novelId: parts[1], n: parseInt(parts[3]) };
+        if (parts[2] === "chapters") return { name: "chapters", novelId: parts[1] };
+        if (parts[2] === "audit") return { name: "audit", novelId: parts[1] };
+        if (parts[2] === "edit") return { name: "edit", novelId: parts[1] };
+        return { name: "novel", novelId: parts[1] };
     }
-};
-
-// 小说管理功能
-const NovelManager = {
-    // 创建新小说
-    createNovel: async (title, requirements) => {
-        try {
-            Utils.showLoading('正在创建小说项目...');
-            
-            const response = await Utils.apiRequest('/novels', {
-                method: 'POST',
-                body: JSON.stringify({
-                    title: title,
-                    user_requirements: requirements
-                })
-            });
-            
-            if (response.success) {
-                Utils.showMessage('小说项目创建成功！', 'success');
-                AppState.currentNovelId = response.data.novel_id;
-                
-                // 自动选择标签
-                await NovelManager.selectTags(response.data.novel_id);
-            }
-        } catch (error) {
-            Utils.showMessage('创建小说失败: ' + error.message, 'danger');
-        } finally {
-            Utils.hideLoading();
-        }
-    },
-
-    // 选择标签
-    selectTags: async (novelId) => {
-        try {
-            Utils.showLoading('正在分析需求并推荐标签...');
-            
-            const response = await Utils.apiRequest(`/novels/${novelId}/tags`, {
-                method: 'POST'
-            });
-            
-            if (response.success) {
-                Utils.showMessage('标签推荐完成！', 'success');
-                Navigation.showCreationWorkflow(novelId);
-            }
-        } catch (error) {
-            Utils.showMessage('标签选择失败: ' + error.message, 'danger');
-        } finally {
-            Utils.hideLoading();
-        }
-    },
-
-    // 加载小说列表
-    loadNovelList: async () => {
-        try {
-            const response = await Utils.apiRequest('/novels');
-            
-            if (response.success) {
-                const novels = response.data;
-                displayNovelList(novels);
-            }
-        } catch (error) {
-            Utils.showMessage('加载小说列表失败: ' + error.message, 'danger');
-        }
-    },
-
-    // 加载续写小说列表
-    loadContinuationNovelList: async () => {
-        try {
-            console.log('开始加载续写小说列表...');
-            const response = await Utils.apiRequest('/novels');
-            console.log('API响应:', response);
-            
-            if (response.success) {
-                const novels = response.data;
-                console.log('小说数据:', novels);
-                displayContinuationNovelList(novels);
-                console.log('displayContinuationNovelList 已调用');
-            } else {
-                console.error('API返回失败:', response);
-            }
-        } catch (error) {
-            console.error('加载小说列表失败:', error);
-            Utils.showMessage('加载小说列表失败: ' + error.message, 'danger');
-        }
-    },
-
-    // 开始续写
-    startContinuation: async (novelId, requirements) => {
-        try {
-            // 首先检查是否有现有的续写进度
-            const statusResponse = await Utils.apiRequest(`/novels/${novelId}/continuation-status`);
-            
-            let resetCache = false;
-            
-            if (statusResponse.success && statusResponse.data.is_continuation) {
-                // 有现有进度，询问用户是否继续
-                const currentStep = statusResponse.data.current_step;
-                const hasProgress = currentStep && currentStep !== 'not_started' && currentStep !== 'storyline_generation';
-                
-                if (hasProgress) {
-                    const userChoice = await showContinuationOptionsDialog(currentStep);
-                    if (userChoice === 'cancel') {
-                        return; // 用户取消操作
-                    }
-                    resetCache = (userChoice === 'restart');
-                }
-            }
-            
-            Utils.showLoading(resetCache ? '正在重新启动续写流程...' : '正在启动续写流程...');
-            
-            const response = await Utils.apiRequest(`/novels/${novelId}/continuation`, {
-                method: 'POST',
-                body: JSON.stringify({
-                    user_requirements: requirements,
-                    reset_cache: resetCache
-                })
-            });
-            
-            if (response.success) {
-                const message = response.data.status === 'continued' ? 
-                    '续写流程已恢复！' : '续写流程启动成功！';
-                Utils.showMessage(message, 'success');
-                Navigation.showContinuationWorkflow(novelId);
-            }
-        } catch (error) {
-            Utils.showMessage('启动续写失败: ' + error.message, 'danger');
-        } finally {
-            Utils.hideLoading();
-        }
+    if (parts[0] === "genres") {
+        if (parts[1] === "new") return { name: "genre_new" };
+        if (parts[1]) return { name: "genre_edit", genreName: parts[1] };
+        return { name: "genres" };
     }
-};
+    return { name: "home" };
+}
 
-// 显示续写选项对话框
-const showContinuationOptionsDialog = (currentStep) => {
-    return new Promise((resolve) => {
-        const stepNames = {
-            'storyline_improvement': '故事线优化',
-            'chapter_writing': '章节写作',
-            'content_improvement': '内容优化',
-            'chapter_save': '章节保存',
-            'quality_assessment': '质量评估',
-            'chapter_quality_assessment': '章节质量评估'
-        };
-        
-        const friendlyStepName = stepNames[currentStep] || currentStep;
-        
-        const modalHtml = `
-            <div class="modal fade" id="continuationOptionsModal" tabindex="-1">
-                <div class="modal-dialog">
-                    <div class="modal-content">
-                        <div class="modal-header">
-                            <h5 class="modal-title">
-                                <i class="fas fa-question-circle me-2"></i>
-                                检测到续写进度
-                            </h5>
-                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                        </div>
-                        <div class="modal-body">
-                            <div class="alert alert-info">
-                                <i class="fas fa-info-circle me-2"></i>
-                                检测到您有未完成的续写进度，当前步骤：<strong>${friendlyStepName}</strong>
-                            </div>
-                            
-                            <p class="mb-3">您希望如何处理？</p>
-                            
-                            <div class="d-grid gap-2">
-                                <button type="button" class="btn btn-primary btn-lg" onclick="resolveContinuationDialog('continue')">
-                                    <i class="fas fa-play me-2"></i>
-                                    继续上次进度
-                                    <small class="d-block text-light mt-1">保留已生成的内容，从当前步骤继续</small>
-                                </button>
-                                
-                                <button type="button" class="btn btn-warning btn-lg" onclick="resolveContinuationDialog('restart')">
-                                    <i class="fas fa-redo me-2"></i>
-                                    重新开始续写
-                                    <small class="d-block text-light mt-1">清除所有进度，从头开始生成</small>
-                                </button>
-                                
-                                <button type="button" class="btn btn-secondary" onclick="resolveContinuationDialog('cancel')">
-                                    <i class="fas fa-times me-2"></i>
-                                    取消操作
-                                </button>
-                            </div>
-                        </div>
-                    </div>
+async function route() {
+    const r = parseHash();
+    Util.closeAllModals();
+    Util.destroyCharts();
+    Util.hideLoading();   // 兜底关掉残留 overlay
+    // 离开阅读器：移除滚动监听 + 退出全屏样式
+    if (State._onScroll) {
+        window.removeEventListener("scroll", State._onScroll);
+        State._onScroll = null;
+    }
+    if (r.name !== "chapter") {
+        document.body.classList.remove("reader-fullscreen");
+        State.reader.fullscreen = false;
+    }
+    const root = document.getElementById("mainContainer");
+    root.innerHTML = `<div class="text-center text-muted py-5"><div class="spinner-border text-primary"></div></div>`;
+    try {
+        if (r.name === "home")          await renderHome(root);
+        else if (r.name === "novel")    await renderNovel(root, r.novelId);
+        else if (r.name === "chapters") await renderChaptersGrid(root, r.novelId);
+        else if (r.name === "chapter")  await renderChapter(root, r.novelId, r.n);
+        else if (r.name === "audit")    await renderAudit(root, r.novelId);
+        else if (r.name === "edit")     await renderEdit(root, r.novelId);
+        else if (r.name === "genres")     await renderGenresHome(root);
+        else if (r.name === "genre_new")  {
+            const preset = State._llmPreset;
+            State._llmPreset = null;
+            await renderGenreEdit(root, null, preset);
+        }
+        else if (r.name === "genre_edit") await renderGenreEdit(root, r.genreName);
+        else root.innerHTML = `<div class="alert alert-warning">未知路由</div>`;
+    } catch (e) {
+        root.innerHTML = `
+            <div class="alert alert-danger">
+                <h5><i class="fas fa-bug me-2"></i>页面加载失败</h5>
+                <div class="small">${Util.escape(e.message)}</div>
+                <button class="btn btn-sm btn-outline-light mt-2" onclick="App.go('#/')">返回主页</button>
+            </div>`;
+    }
+}
+
+window.addEventListener("hashchange", route);
+
+/* ============================================================
+ * 视图 1：主页
+ * ============================================================ */
+async function renderHome(root) {
+    State.novels = await Util.get("/novels");
+    if (State.genres.length === 0) State.genres = await Util.get("/genres");
+    State.currentNovelId = null;
+
+    root.innerHTML = `
+        <div class="hero-section mb-4">
+            <div class="row align-items-center">
+                <div class="col-lg-8">
+                    <h1 class="hero-title mb-2">
+                        <i class="fas fa-feather-alt"></i>
+                        InkAI <span class="text-muted fs-5 ms-2">智能小说创作系统</span>
+                    </h1>
+                    <p class="text-muted mb-0">
+                        基于 LLM 的多智能体超长篇小说自动写作管道 ·
+                        <span class="badge bg-light text-dark">v2.2</span>
+                    </p>
                 </div>
-            </div>
-        `;
-        
-        // 移除已存在的模态框
-        const existingModal = document.getElementById('continuationOptionsModal');
-        if (existingModal) {
-            existingModal.remove();
-        }
-        
-        // 添加新的模态框
-        document.body.insertAdjacentHTML('beforeend', modalHtml);
-        
-        // 存储resolve函数
-        window.continuationDialogResolve = resolve;
-        
-        // 显示模态框
-        const modal = new bootstrap.Modal(document.getElementById('continuationOptionsModal'));
-        modal.show();
-    });
-};
-
-// 处理续写对话框的选择
-window.resolveContinuationDialog = (choice) => {
-    const modal = bootstrap.Modal.getInstance(document.getElementById('continuationOptionsModal'));
-    modal.hide();
-    
-    if (window.continuationDialogResolve) {
-        window.continuationDialogResolve(choice);
-        window.continuationDialogResolve = null;
-    }
-};
-
-// 工作流程管理
-const WorkflowManager = {
-    // 加载创作工作流程
-    loadCreationWorkflow: async (novelId) => {
-        try {
-            const response = await Utils.apiRequest(`/novels/${novelId}/workflow-status`);
-            
-            if (response.success) {
-                AppState.workflowData = response.data;
-                displayCreationWorkflow(response.data);
-            }
-        } catch (error) {
-            Utils.showMessage('加载工作流程状态失败: ' + error.message, 'danger');
-        }
-    },
-
-    // 执行工作流程步骤
-    executeStep: async (stepName, novelId) => {
-        try {
-            // 根据步骤类型显示具体的加载提示
-            const stepMessages = {
-                'character_creation': '正在创建人物形象，AI正在分析角色设定...',
-                'storyline_generation': '正在生成故事线，AI正在构思情节发展...',
-                'knowledge_graph_creation': '正在创建知识图谱，AI正在整理故事要素...',
-                'chapter_writing': '正在写作章节内容，AI正在创作精彩故事...',
-                'chapter_completed': '小说创作已完成！'
-            };
-            
-            const loadingMessage = stepMessages[stepName] || `正在执行${stepName}...`;
-            Utils.showLoading(loadingMessage);
-            
-            let response;
-            switch (stepName) {
-                case 'character_creation':
-                    response = await Utils.callNovelAPI(novelId, '/characters', 'POST');
-                    break;
-                case 'storyline_generation':
-                    response = await Utils.callNovelAPI(novelId, '/storyline', 'POST');
-                    break;
-                case 'knowledge_graph_creation':
-                    response = await Utils.callNovelAPI(novelId, '/knowledge-graph', 'POST');
-                    break;
-                case 'chapter_writing':
-                    response = await Utils.callNovelAPI(novelId, '/chapters', 'POST');
-                    break;
-                case 'chapter_completed':
-                    // 创作完成状态，不需要执行任何操作
-                    Utils.showMessage('小说创作已完成！', 'success');
-                    return;
-                default:
-                    throw new Error('未知的步骤: ' + stepName);
-            }
-            
-            if (response.success) {
-                const successMessages = {
-                    'character_creation': '人物形象创建成功！',
-                    'storyline_generation': '故事线生成成功！',
-                    'knowledge_graph_creation': '知识图谱创建成功！',
-                    'chapter_writing': '章节写作完成！'
-                };
-                Utils.showMessage(successMessages[stepName] || `${stepName}执行成功！`, 'success');
-                // 重新加载工作流程状态
-                await WorkflowManager.loadCreationWorkflow(novelId);
-            }
-        } catch (error) {
-            Utils.showMessage(`执行${stepName}失败: ` + error.message, 'danger');
-        } finally {
-            Utils.hideLoading();
-        }
-    },
-
-    // 改进内容
-    improveContent: async (type, novelId, suggestions) => {
-        try {
-            Utils.showLoading(`正在改进${type}...`);
-            
-            let response;
-            if (type === 'characters') {
-                response = await Utils.apiRequest(`/novels/${novelId}/characters/improve`, {
-                    method: 'POST',
-                    body: JSON.stringify({ suggestions })
-                });
-            } else if (type === 'storyline') {
-                response = await Utils.apiRequest(`/novels/${novelId}/storyline/improve`, {
-                    method: 'POST',
-                    body: JSON.stringify({ suggestions })
-                });
-            }
-            
-            if (response.success) {
-                Utils.showMessage(`${type}改进成功！`, 'success');
-                await WorkflowManager.loadCreationWorkflow(novelId);
-            }
-        } catch (error) {
-            Utils.showMessage(`改进${type}失败: ` + error.message, 'danger');
-        } finally {
-            Utils.hideLoading();
-        }
-    }
-};
-
-// 快速续写管理
-const QuickContinuationManager = {
-    // 加载进度
-    loadProgress: async (novelId) => {
-        try {
-            const response = await Utils.apiRequest(`/novels/${novelId}/continuation/quick/progress`);
-            if (response.success) {
-                AppState.quickContinuationProgress = response.data;
-                displayQuickContinuationProgress(response.data);
-                
-                // 如果任务还在运行，设置定时刷新
-                if (response.data.status === 'running') {
-                    QuickContinuationManager.startProgressPolling(novelId);
-                }
-            } else {
-                Utils.showMessage('获取快速续写进度失败: ' + response.error, 'danger');
-            }
-        } catch (error) {
-            Utils.showMessage('获取快速续写进度失败: ' + error.message, 'danger');
-        }
-    },
-
-    // 开始进度轮询
-    startProgressPolling: (novelId) => {
-        // 清除之前的定时器
-        if (AppState.progressPollingTimer) {
-            clearInterval(AppState.progressPollingTimer);
-        }
-        
-        // 设置新的定时器，每5秒刷新一次
-        AppState.progressPollingTimer = setInterval(async () => {
-            try {
-                const response = await Utils.apiRequest(`/novels/${novelId}/continuation/quick/progress`);
-                if (response.success) {
-                    const previousProgress = AppState.quickContinuationProgress;
-                    AppState.quickContinuationProgress = response.data;
-                    updateQuickContinuationProgress(response.data);
-                    
-                    // 检查是否有新章节完成
-                    if (previousProgress && response.data.completed_chapters > previousProgress.completed_chapters) {
-                        console.log(`检测到第${response.data.completed_chapters}章完成，立即刷新数据...`);
-                        
-                        // 立即更新章节详情列表
-                        updateChapterDetailsList(response.data);
-                        
-                        // 刷新其他相关数据
-                        await refreshNovelDataAfterCompletion(novelId, response.data.completed_chapters);
-                    }
-                    
-                    // 如果任务完成或失败，停止轮询并刷新相关数据
-                    if (response.data.status === 'completed' || response.data.status === 'failed') {
-                        QuickContinuationManager.stopProgressPolling();
-                        
-                        // 任务完成时，刷新小说列表和章节信息
-                        if (response.data.status === 'completed') {
-                            console.log('快速续写任务完成，开始刷新相关数据...');
-                            await refreshNovelDataAfterCompletion(novelId);
-                        }
-                    }
-                }
-            } catch (error) {
-                console.error('轮询进度失败:', error);
-            }
-        }, 5000);
-    },
-
-    // 停止进度轮询
-    stopProgressPolling: () => {
-        if (AppState.progressPollingTimer) {
-            clearInterval(AppState.progressPollingTimer);
-            AppState.progressPollingTimer = null;
-        }
-    },
-
-    // 停止任务
-    stopTask: async (novelId) => {
-        try {
-            Utils.showLoading('正在停止任务...');
-            const response = await Utils.apiRequest(`/novels/${novelId}/continuation/quick/stop`, {
-                method: 'POST'
-            });
-            
-            if (response.success) {
-                Utils.showMessage('任务已停止', 'success');
-                QuickContinuationManager.loadProgress(novelId);
-            } else {
-                Utils.showMessage('停止任务失败: ' + response.error, 'danger');
-            }
-        } catch (error) {
-            Utils.showMessage('停止任务失败: ' + error.message, 'danger');
-        } finally {
-            Utils.hideLoading();
-        }
-    },
-
-    // 暂停任务
-    pauseTask: async (novelId) => {
-        try {
-            Utils.showLoading('正在暂停任务...');
-            const response = await Utils.apiRequest(`/novels/${novelId}/continuation/quick/pause`, {
-                method: 'POST'
-            });
-            
-            if (response.success) {
-                Utils.showMessage('任务已暂停', 'success');
-                QuickContinuationManager.loadProgress(novelId);
-            } else {
-                Utils.showMessage('暂停任务失败: ' + response.error, 'danger');
-            }
-        } catch (error) {
-            Utils.showMessage('暂停任务失败: ' + error.message, 'danger');
-        } finally {
-            Utils.hideLoading();
-        }
-    },
-
-    // 恢复任务
-    resumeTask: async (novelId) => {
-        try {
-            Utils.showLoading('正在恢复任务...');
-            const response = await Utils.apiRequest(`/novels/${novelId}/continuation/quick/resume`, {
-                method: 'POST'
-            });
-            
-            if (response.success) {
-                Utils.showMessage('任务已恢复', 'success');
-                QuickContinuationManager.loadProgress(novelId);
-                QuickContinuationManager.startProgressPolling(novelId);
-            } else {
-                Utils.showMessage('恢复任务失败: ' + response.error, 'danger');
-            }
-        } catch (error) {
-            Utils.showMessage('恢复任务失败: ' + error.message, 'danger');
-        } finally {
-            Utils.hideLoading();
-        }
-    }
-};
-
-// 续写流程管理
-const ContinuationManager = {
-    // 加载续写工作流程
-    loadContinuationWorkflow: async (novelId) => {
-        try {
-            const response = await Utils.apiRequest(`/novels/${novelId}/continuation-status`);
-            
-            if (response.success) {
-                AppState.continuationData = response.data;
-                displayContinuationWorkflow(response.data);
-            }
-        } catch (error) {
-            Utils.showMessage('加载续写状态失败: ' + error.message, 'danger');
-        }
-    },
-
-    // 执行续写步骤
-    executeContinuationStep: async (stepName, novelId) => {
-        try {
-            Utils.showLoading(`正在执行${stepName}...`);
-            
-            let response;
-            switch (stepName) {
-                case 'storyline_generation':
-                    response = await Utils.apiRequest(`/novels/${novelId}/continuation/storyline`, {
-                        method: 'POST'
-                    });
-                    break;
-                case 'storyline_improvement':
-                    response = await Utils.apiRequest(`/novels/${novelId}/continuation/storyline/improve`, {
-                        method: 'POST'
-                    });
-                    break;
-                case 'quality_assessment':
-                    response = await Utils.apiRequest(`/novels/${novelId}/continuation/quality`, {
-                        method: 'POST',
-                        body: JSON.stringify({ content_type: 'storyline' })
-                    });
-                    break;
-                case 'content_improvement':
-                    response = await Utils.apiRequest(`/novels/${novelId}/continuation/chapter/improve`, {
-                        method: 'POST',
-                        body: JSON.stringify({ suggestions: [] })
-                    });
-                    break;
-                case 'chapter_writing':
-                    response = await Utils.apiRequest(`/novels/${novelId}/continuation/chapter`, {
-                        method: 'POST'
-                    });
-                    
-                    // 章节写作完成后，自动保存章节
-                    if (response.success) {
-                        console.log('章节写作完成，开始保存章节...');
-                        const saveResponse = await Utils.apiRequest(`/novels/${novelId}/continuation/save`, {
-                            method: 'POST'
-                        });
-                        
-                        if (saveResponse.success) {
-                            console.log('章节保存成功');
-                        } else {
-                            console.error('章节保存失败:', saveResponse.error);
-                            Utils.showMessage('章节保存失败: ' + saveResponse.error, 'warning');
-                        }
-                    }
-                    break;
-                case 'chapter_quality_assessment':
-                    response = await Utils.apiRequest(`/novels/${novelId}/continuation/quality`, {
-                        method: 'POST',
-                        body: JSON.stringify({ content_type: 'story' })
-                    });
-                    break;
-                case 'chapter_save':
-                    response = await Utils.apiRequest(`/novels/${novelId}/continuation/save`, {
-                        method: 'POST'
-                    });
-                    break;
-                case 'chapter_completed':
-                    // 续写完成状态，不需要执行任何操作
-                    Utils.showMessage('续写章节已完成！', 'success');
-                    return;
-                default:
-                    throw new Error('未知的续写步骤: ' + stepName);
-            }
-            
-            if (response.success) {
-                const stepNames = {
-                    'storyline_generation': '续写故事线生成',
-                    'quality_assessment': '故事线质量评估',
-                    'storyline_improvement': '故事线优化',
-                    'chapter_writing': '续写章节写作',
-                    'chapter_quality_assessment': '章节质量评估',
-                    'content_improvement': '章节内容优化',
-                    'chapter_save': '章节保存',
-                    'chapter_completed': '续写完成'
-                };
-                const friendlyName = stepNames[stepName] || stepName;
-                Utils.showMessage(`${friendlyName}执行成功！`, 'success');
-                
-                // 如果是续写完成，刷新相关数据
-                if (stepName === 'chapter_completed') {
-                    console.log('普通续写完成，开始刷新相关数据...');
-                    await refreshNovelDataAfterCompletion(novelId);
-                }
-                
-                await ContinuationManager.loadContinuationWorkflow(novelId);
-            }
-        } catch (error) {
-            Utils.showMessage(`执行${stepName}失败: ` + error.message, 'danger');
-        } finally {
-            Utils.hideLoading();
-        }
-    }
-};
-
-// 显示函数
-const displayNovelList = (novels) => {
-    const container = document.getElementById('novels-container');
-    
-    if (novels.length === 0) {
-        container.innerHTML = `
-            <div class="text-center py-5">
-                <i class="fas fa-book-open fa-3x text-muted mb-3"></i>
-                <h5 class="text-muted">暂无小说项目</h5>
-                <p class="text-muted">点击"开始创作"创建您的第一部小说</p>
-            </div>
-        `;
-        return;
-    }
-    
-    const novelsHtml = novels.map(novel => `
-        <div class="novel-item">
-            <div class="novel-header">
-                <h5 class="novel-title">${novel.title}</h5>
-                <div class="novel-meta">
-                    <i class="fas fa-calendar me-1"></i>
-                    创建时间: ${Utils.formatDate(novel.created_at)}
-                    <span class="ms-3">
-                        <i class="fas fa-tag me-1"></i>
-                        状态: ${novel.status}
-                    </span>
-                </div>
-            </div>
-            <div class="novel-body">
-                <div class="novel-stats">
-                    <div class="stat-item">
-                        <div class="stat-value">${novel.chapters ? novel.chapters.length : 0}</div>
-                        <div class="stat-label">章节数</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-value">${novel.novel_id.substring(0, 8)}...</div>
-                        <div class="stat-label">项目ID</div>
-                    </div>
-                </div>
-                <div class="d-flex gap-2">
-                    <button class="btn btn-success btn-sm" onclick="startContinuationFromList('${novel.novel_id}')">
-                        <i class="fas fa-edit me-1"></i>续写
-                    </button>
-                    <button class="btn btn-info btn-sm" onclick="viewNovelDetails('${novel.novel_id}')">
-                        <i class="fas fa-eye me-1"></i>查看详情
-                    </button>
-                    <button class="btn btn-danger btn-sm" onclick="deleteNovel('${novel.novel_id}', '${novel.title}')" title="删除小说">
-                        <i class="fas fa-trash me-1"></i>删除
+                <div class="col-lg-4 text-lg-end mt-3 mt-lg-0">
+                    <button class="btn btn-primary btn-lg" onclick="App.openCreateModal()">
+                        <i class="fas fa-plus-circle me-2"></i>开始一本新小说
                     </button>
                 </div>
             </div>
         </div>
-    `).join('');
-    
-    container.innerHTML = novelsHtml;
-};
 
-// 显示续写小说列表
-const displayContinuationNovelList = (novels) => {
-    console.log('displayContinuationNovelList 被调用，小说数量:', novels.length);
-    const container = document.getElementById('novel-list');
-    console.log('容器元素:', container);
-    
-    if (!container) {
-        console.error('找不到 novel-list 容器元素');
-        return;
-    }
-    
-    if (novels.length === 0) {
-        container.innerHTML = `
-            <div class="text-center py-4">
-                <i class="fas fa-book-open fa-2x text-muted mb-3"></i>
-                <h6 class="text-muted">暂无小说项目</h6>
-                <p class="text-muted small">请先创建一部小说，然后才能进行续写</p>
+        <div class="d-flex flex-wrap gap-2 align-items-end mb-3">
+            <h4 class="mb-0 me-3"><i class="fas fa-book-open me-2 text-primary"></i>已有小说</h4>
+            <div class="input-group home-filter-search">
+                <span class="input-group-text"><i class="fas fa-search"></i></span>
+                <input class="form-control" id="homeQ" placeholder="搜索标题 / 主角 / 题材"
+                       value="${Util.escape(State.homeFilter.q)}" oninput="App.applyHomeFilter()" />
             </div>
-        `;
-        return;
+            <select class="form-select home-filter-select" id="homeSort" onchange="App.applyHomeFilter()">
+                <option value="updated_desc"  ${State.homeFilter.sort === "updated_desc" ? "selected" : ""}>最近更新</option>
+                <option value="updated_asc"   ${State.homeFilter.sort === "updated_asc"  ? "selected" : ""}>最早更新</option>
+                <option value="title_asc"     ${State.homeFilter.sort === "title_asc"    ? "selected" : ""}>标题 A→Z</option>
+                <option value="progress_desc" ${State.homeFilter.sort === "progress_desc"? "selected" : ""}>进度多→少</option>
+                <option value="progress_asc"  ${State.homeFilter.sort === "progress_asc" ? "selected" : ""}>进度少→多</option>
+                <option value="audit_desc"    ${State.homeFilter.sort === "audit_desc"   ? "selected" : ""}>审计分高→低</option>
+            </select>
+            <select class="form-select home-filter-select" id="homeStage" onchange="App.applyHomeFilter()">
+                <option value="all"        ${State.homeFilter.stage === "all"        ? "selected" : ""}>全部阶段</option>
+                <option value="no_blueprint"${State.homeFilter.stage === "no_blueprint"? "selected" : ""}>未生成蓝图</option>
+                <option value="no_chapter" ${State.homeFilter.stage === "no_chapter" ? "selected" : ""}>未开始写章</option>
+                <option value="in_progress"${State.homeFilter.stage === "in_progress"? "selected" : ""}>进行中</option>
+                <option value="finished"   ${State.homeFilter.stage === "finished"   ? "selected" : ""}>已完成</option>
+                <option value="canon_err"  ${State.homeFilter.stage === "canon_err"  ? "selected" : ""}>Canon 异常</option>
+            </select>
+            <div class="text-muted small ms-auto">
+                共 ${State.novels.length} 本 · 题材包 ${State.genres.length} 个
+                <button class="btn btn-sm btn-outline-secondary ms-2" onclick="App.go('#/')" title="刷新">
+                    <i class="fas fa-rotate"></i>
+                </button>
+            </div>
+        </div>
+
+        <div class="row g-4" id="novelGrid"></div>
+    `;
+    renderNovelGrid();
+}
+
+/** 应用搜索/排序/筛选并重渲染卡片 */
+function renderNovelGrid() {
+    let list = State.novels.slice();
+    const f = State.homeFilter;
+    if (f.q.trim()) {
+        const q = f.q.trim().toLowerCase();
+        list = list.filter(n =>
+            (n.title || "").toLowerCase().includes(q) ||
+            (n.main_character_name || "").toLowerCase().includes(q) ||
+            (n.genre_display || n.genre || "").toLowerCase().includes(q)
+        );
     }
-    
-    const novelsHtml = novels.map(novel => `
-        <div class="list-group-item">
-            <div class="d-flex w-100 justify-content-between align-items-start">
-                <div class="flex-grow-1" style="cursor: pointer;" onclick="selectNovel('${novel.novel_id}')">
-                    <h6 class="mb-1">${novel.title}</h6>
-                    <div class="d-flex justify-content-between align-items-center mb-2">
-                        <div>
-                            <span class="badge bg-primary me-2">${novel.chapters ? novel.chapters.length : 0} 章节</span>
-                            <span class="badge bg-secondary">${novel.status}</span>
-                        </div>
-                        <small class="text-muted">ID: ${novel.novel_id.substring(0, 8)}...</small>
-                    </div>
-                    <small class="text-muted">${Utils.formatDate(novel.created_at)}</small>
+    if (f.stage !== "all") {
+        list = list.filter(n => {
+            const s = n.stage || {};
+            const c = n.canon_summary || {};
+            const total = n.total_chapters_planned || 0;
+            if (f.stage === "no_blueprint") return !s.blueprint;
+            if (f.stage === "no_chapter")   return s.blueprint && (s.chapters_done || 0) === 0;
+            if (f.stage === "in_progress")  return (s.chapters_done || 0) > 0 && (s.chapters_done || 0) < total;
+            if (f.stage === "finished")     return total > 0 && (s.chapters_done || 0) >= total;
+            if (f.stage === "canon_err")    return (c.ERROR || 0) > 0;
+            return true;
+        });
+    }
+    list.sort((a, b) => {
+        if (f.sort === "title_asc")     return (a.title || "").localeCompare(b.title || "");
+        if (f.sort === "updated_asc")   return (a.updated_at || "").localeCompare(b.updated_at || "");
+        if (f.sort === "progress_desc") return ((b.stage||{}).chapters_done||0) - ((a.stage||{}).chapters_done||0);
+        if (f.sort === "progress_asc")  return ((a.stage||{}).chapters_done||0) - ((b.stage||{}).chapters_done||0);
+        if (f.sort === "audit_desc")    return (b.audit_overall_score || 0) - (a.audit_overall_score || 0);
+        return (b.updated_at || "").localeCompare(a.updated_at || "");
+    });
+    const grid = document.getElementById("novelGrid");
+    if (!grid) return;
+    grid.innerHTML = list.map(novelCard).join("") ||
+        (State.novels.length === 0 ? emptyState() : `
+        <div class="col-12">
+            <div class="empty-state text-center py-4">
+                <i class="fas fa-filter fa-2x text-muted mb-2"></i>
+                <div class="text-muted">没有匹配的小说</div>
+                <button class="btn btn-sm btn-link" onclick="App.clearHomeFilter()">清除筛选</button>
+            </div>
+        </div>`);
+}
+
+function emptyState() {
+    return `<div class="col-12">
+        <div class="empty-state text-center py-5">
+            <i class="fas fa-book-dead fa-3x text-muted mb-3"></i>
+            <h5 class="text-muted mb-3">还没有小说</h5>
+            <button class="btn btn-primary" onclick="App.openCreateModal()">
+                <i class="fas fa-plus-circle me-2"></i>开始第一本小说
+            </button>
+        </div>
+    </div>`;
+}
+
+function novelCard(n) {
+    const stage = n.stage || {};
+    const c = n.canon_summary || {};
+    const ce = c.ERROR || 0, cw = c.WARNING || 0;
+    const audit = (n.audit_overall_score != null) ? `${n.audit_overall_score}` : "—";
+    const auditClass = n.audit_overall_score >= 90 ? "high" :
+                       n.audit_overall_score >= 70 ? "mid" : "low";
+    const stageBadge = (label, ok) =>
+        `<span class="stage-pill ${ok ? "done" : "todo"}">
+             <i class="fas fa-${ok ? "check" : "circle-dot"} me-1"></i>${label}
+         </span>`;
+
+    return `
+    <div class="col-md-6 col-xl-4">
+        <div class="card novel-card h-100 shadow-sm" onclick="App.go('#/novel/${n.novel_id}')">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start mb-2">
+                    <h5 class="card-title mb-0">${Util.escape(n.title) || "&lt;未命名&gt;"}</h5>
+                    <span class="badge bg-light text-dark genre-badge">${Util.escape(n.genre_display || n.genre || "")}</span>
                 </div>
-                <div class="ms-2">
-                    <button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); deleteNovel('${novel.novel_id}', '${novel.title}')" title="删除小说">
+                <div class="text-muted small mb-3">
+                    <i class="fas fa-user me-1"></i>${Util.escape(n.main_character_name) || "—"}
+                    ${n.supporting_character_names && n.supporting_character_names.length
+                        ? ` · 配角 ${n.supporting_character_names.length}` : ""}
+                </div>
+                <div class="progress chapter-progress mb-2" style="height:8px">
+                    <div class="progress-bar bg-success"
+                         style="width:${(stage.chapters_done / Math.max(1, n.total_chapters_planned)) * 100}%"></div>
+                </div>
+                <div class="d-flex justify-content-between small text-muted mb-3">
+                    <span><i class="fas fa-list-ol me-1"></i>${stage.chapters_done}/${n.total_chapters_planned} 章</span>
+                    <span class="audit-score ${auditClass}">
+                        <i class="fas fa-gauge-high me-1"></i>审计 ${audit}
+                    </span>
+                </div>
+                <div class="stage-row mb-2">
+                    ${stageBadge("Init", true)}
+                    ${stageBadge("Storyline", stage.storyline_expanded)}
+                    ${stageBadge("Canon", stage.canon_report)}
+                    ${stageBadge("Blueprint", stage.blueprint)}
+                    ${stageBadge("Chapters", stage.chapters_done > 0)}
+                </div>
+                ${ce + cw > 0 ? `
+                <div class="small text-warning"><i class="fas fa-triangle-exclamation me-1"></i>
+                  Canon ERROR=${ce} WARNING=${cw}</div>` : ""}
+            </div>
+            <div class="card-footer bg-light d-flex justify-content-between align-items-center">
+                <span class="text-muted small">${Util.escape(n.novel_id.slice(0, 8))}…</span>
+                <div class="btn-group btn-group-sm" onclick="event.stopPropagation()">
+                    <button class="btn btn-outline-primary" onclick="App.go('#/novel/${n.novel_id}')">
+                        <i class="fas fa-arrow-right"></i> 进入
+                    </button>
+                    <button class="btn btn-outline-danger" onclick="App.deleteNovel('${n.novel_id}')">
                         <i class="fas fa-trash"></i>
                     </button>
                 </div>
             </div>
         </div>
-    `).join('');
-    
-    container.innerHTML = novelsHtml;
-};
+    </div>`;
+}
 
-const displayCreationWorkflow = (workflowData) => {
-    const container = document.getElementById('workflow-container');
-    
-    const steps = [
-        { key: 'tag_selection', name: '标签选择', icon: 'fas fa-tags' },
-        { key: 'character_creation', name: '人物创建', icon: 'fas fa-users' },
-        { key: 'storyline_generation', name: '故事线生成', icon: 'fas fa-route' },
-        { key: 'knowledge_graph_creation', name: '知识图谱创建', icon: 'fas fa-project-diagram' },
-        { key: 'chapter_writing', name: '章节写作', icon: 'fas fa-pen-fancy' },
-        { key: 'chapter_completed', name: '创作完成', icon: 'fas fa-check-circle' }
-    ];
-    
-    const currentStep = workflowData.current_step;
-    
-    const stepsHtml = steps.map(step => {
-        let status = 'pending';
-        let statusClass = 'pending';
-        
-        const currentStepIndex = steps.findIndex(s => s.key === currentStep);
-        const stepIndex = steps.indexOf(step);
-        
-        if (stepIndex < currentStepIndex) {
-            // 当前步骤之前的步骤都是已完成
-            status = 'completed';
-            statusClass = 'completed';
-        } else if (stepIndex === currentStepIndex) {
-            // 当前步骤
-            status = 'current';
-            statusClass = 'current';
-        } else {
-            // 当前步骤之后的步骤都是等待中
-            status = 'pending';
-            statusClass = 'pending';
-        }
-        
-        return `
-            <div class="workflow-step ${statusClass}">
-                <div class="step-header" onclick="${status === 'completed' ? `toggleStepDetails('${step.key}')` : ''}" style="${status === 'completed' ? 'cursor: pointer;' : ''}">
-                    <div class="step-icon ${statusClass}">
-                        <i class="${step.icon}"></i>
-                    </div>
-                    <div class="flex-grow-1">
-                        <h5 class="step-title">${step.name}</h5>
-                        <p class="step-description">
-                            ${status === 'completed' ? '已完成' : 
-                              status === 'current' ? '进行中' : '等待中'}
-                        </p>
-                    </div>
-                    ${status === 'completed' ? `
-                        <div class="step-actions">
-                            <i class="fas fa-chevron-down step-toggle-icon" id="toggle-icon-${step.key}"></i>
-                        </div>
-                    ` : ''}
-                </div>
-                
-                ${status === 'completed' ? `
-                    <div class="step-details" id="step-details-${step.key}" style="display: none;">
-                        <div class="step-content">
-                            <div class="loading-placeholder">
-                                <i class="fas fa-spinner fa-spin me-2"></i>
-                                正在加载详细内容...
-                            </div>
-                        </div>
-                    </div>
-                ` : ''}
-                
-                ${status === 'current' && step.key !== 'chapter_completed' ? `
-                    <div class="d-flex gap-2">
-                        <button class="btn btn-primary" onclick="executeStep('${step.key}')">
-                            <i class="fas fa-play me-2"></i>执行此步骤
-                        </button>
-                    </div>
-                ` : ''}
-                ${status === 'current' && step.key === 'chapter_completed' ? `
-                    <div class="alert alert-success">
-                        <i class="fas fa-check-circle me-2"></i>
-                        恭喜！小说创作已完成！您可以查看章节内容或开始续写。
-                    </div>
-                ` : ''}
+/* ============================================================
+ * 视图 2：单本小说工作流
+ * ============================================================ */
+async function renderNovel(root, novelId) {
+    const n = await Util.get(`/novels/${novelId}`);
+    State.currentNovelId = novelId;
+    State.currentNovel = n;
+
+    const s = n.stage || {};
+    const c = n.canon_summary || {};
+    const auditScore = n.audit_overall_score;
+
+    root.innerHTML = `
+    <div class="d-flex align-items-center mb-4 flex-wrap gap-2">
+        <button class="btn btn-sm btn-outline-secondary" onclick="App.go('#/')"><i class="fas fa-arrow-left"></i></button>
+        <div class="flex-grow-1">
+            <h3 class="mb-1">${Util.escape(n.title)}
+                <button class="btn btn-sm btn-link p-0 ms-1" onclick="App.openMetaEditor()" title="编辑信息">
+                    <i class="fas fa-pen text-muted small"></i>
+                </button>
+            </h3>
+            <div class="text-muted small">
+                <span class="badge bg-light text-dark me-2">${Util.escape(n.genre_display || n.genre)}</span>
+                主角 ${Util.escape(n.main_character_name)} · 计划 ${n.total_chapters_planned} 章 ·
+                已生成 ${s.chapters_done}/${n.total_chapters_planned} 章
             </div>
-        `;
-    }).join('');
-    
-    container.innerHTML = `
-        <div class="mb-4">
-            <h5>小说项目: ${workflowData.workflow_state?.title || '未知'}</h5>
-            <p class="text-muted">项目ID: ${workflowData.novel_id}</p>
         </div>
-        ${stepsHtml}
-    `;
-};
+        <div class="text-end">
+            <button class="btn btn-outline-secondary me-2" onclick="App.go('#/novel/${novelId}/edit')">
+                <i class="fas fa-pen-to-square me-1"></i>编辑档案
+            </button>
+            <button class="btn btn-outline-primary me-2" onclick="App.go('#/novel/${novelId}/chapters')">
+                <i class="fas fa-book me-1"></i>章节库
+            </button>
+            <button class="btn btn-outline-info" onclick="App.go('#/novel/${novelId}/audit')">
+                <i class="fas fa-chart-pie me-1"></i>全本审计
+                ${auditScore != null ? `<span class="badge bg-info ms-2">${auditScore}</span>` : ""}
+            </button>
+        </div>
+    </div>
 
-// 推断步骤状态的辅助函数
-const inferStepStatus = (stepKey, currentStep) => {
-    // 定义步骤的逻辑顺序和依赖关系
-    const stepOrder = {
-        'storyline_generation': 1,
-        'quality_assessment': 2,
-        'storyline_improvement': 3,
-        'chapter_writing': 4,
-        'chapter_quality_assessment': 5,
-        'content_improvement': 6,
-        'chapter_save': 7,
-        'chapter_completed': 8
-    };
-    
-    // 如果当前步骤不在定义中，尝试根据名称模式推断
-    let currentStepOrder = stepOrder[currentStep];
-    
-    if (!currentStepOrder) {
-        // 处理可能的步骤名称变体
-        if (currentStep.includes('storyline')) {
-            if (currentStep.includes('improvement')) {
-                currentStepOrder = stepOrder['storyline_improvement'];
-            } else if (currentStep.includes('quality') || currentStep.includes('assessment')) {
-                currentStepOrder = stepOrder['quality_assessment'];
-            } else {
-                currentStepOrder = stepOrder['storyline_generation'];
-            }
-        } else if (currentStep.includes('chapter')) {
-            if (currentStep.includes('save')) {
-                currentStepOrder = stepOrder['chapter_save'];
-            } else if (currentStep.includes('quality') || currentStep.includes('assessment')) {
-                currentStepOrder = stepOrder['chapter_quality_assessment'];
-            } else if (currentStep.includes('completed')) {
-                currentStepOrder = stepOrder['chapter_completed'];
-            } else if (currentStep.includes('improvement')) {
-                currentStepOrder = stepOrder['content_improvement'];
-            } else {
-                currentStepOrder = stepOrder['chapter_writing'];
-            }
-        } else if (currentStep.includes('content') && currentStep.includes('improvement')) {
-            currentStepOrder = stepOrder['content_improvement'];
-        }
-    }
-    
-    const stepKeyOrder = stepOrder[stepKey];
-    
-    if (!currentStepOrder || !stepKeyOrder) {
-        return 'pending'; // 无法推断时默认为待处理
-    }
-    
-    if (stepKeyOrder < currentStepOrder) {
-        return 'completed';
-    } else if (stepKeyOrder === currentStepOrder) {
-        return 'current';
-    } else {
-        return 'pending';
-    }
-};
+    <!-- 5 阶段时间轴：底层背景线 + 节点居中对齐 -->
+    <div class="workflow-timeline mb-4">
+        <div class="timeline-track"></div>
+        <div class="timeline-track-done" id="timelineDone"></div>
+        ${stageStep(1, "Init",       "题材+主角骨架",   true,                                        "fas fa-seedling")}
+        ${stageStep(2, "Storyline",  "LLM 展开三幕剧",  s.storyline_expanded,                        "fas fa-scroll")}
+        ${stageStep(3, "Canon",      "档案一致性校验",  s.canon_report,                              "fas fa-shield-halved",
+                    c.ERROR > 0 ? "warn" : (s.canon_report ? "done" : "todo"))}
+        ${stageStep(4, "Blueprint",  "蓝图+章节卡",     s.blueprint,                                 "fas fa-sitemap")}
+        ${stageStep(5, "Chapters",   "正文批量生成",    s.chapters_done > 0,                         "fas fa-feather-pointed")}
+    </div>
 
-// 改进的推断步骤状态函数，支持跳过状态
-const inferStepStatusWithSkip = (stepKey, currentStep, steps) => {
-    const step = steps.find(s => s.key === stepKey);
-    const currentStepObj = steps.find(s => s.key === currentStep);
-    
-    // 如果找不到步骤定义，使用基础推断
-    if (!step) {
-        return inferStepStatus(stepKey, currentStep);
-    }
-    
-    const stepOrder = {
-        'storyline_generation': 1,
-        'quality_assessment': 2,
-        'storyline_improvement': 3,
-        'chapter_writing': 4,
-        'chapter_quality_assessment': 5,
-        'content_improvement': 6,
-        'chapter_save': 7,
-        'chapter_completed': 8
-    };
-    
-    const stepKeyOrder = stepOrder[stepKey];
-    let currentStepOrder = stepOrder[currentStep];
-    
-    // 如果当前步骤不在定义中，使用模糊匹配
-    if (!currentStepOrder) {
-        currentStepOrder = inferCurrentStepOrder(currentStep, stepOrder);
-    }
-    
-    if (!currentStepOrder || !stepKeyOrder) {
-        return 'pending';
-    }
-    
-    if (stepKeyOrder < currentStepOrder) {
-        // 对于条件性步骤，如果被跳过了，显示为"已跳过"
-        if (step.conditional && !wasStepExecuted(stepKey, currentStep)) {
-            return 'skipped';
-        }
-        return 'completed';
-    } else if (stepKeyOrder === currentStepOrder) {
-        return 'current';
-    } else {
-        return 'pending';
-    }
-};
+    <div class="row g-4">
+        <div class="col-lg-7">
+            <div class="card shadow-sm mb-4">
+                <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
+                    <span><i class="fas fa-scroll me-2"></i>Storyline 三幕剧骨架</span>
+                    <button class="btn btn-sm btn-light" onclick="App.openStorylineEditor()">
+                        <i class="fas fa-pen me-1"></i>编辑
+                    </button>
+                </div>
+                <div class="card-body" id="storylinePane"><div class="text-muted small">加载中…</div></div>
+            </div>
 
-// 推断当前步骤的顺序号
-const inferCurrentStepOrder = (currentStep, stepOrder) => {
-    if (currentStep.includes('storyline')) {
-        if (currentStep.includes('improvement')) {
-            return stepOrder['storyline_improvement'];
-        } else if (currentStep.includes('quality') || currentStep.includes('assessment')) {
-            return stepOrder['quality_assessment'];
-        } else {
-            return stepOrder['storyline_generation'];
-        }
-    } else if (currentStep.includes('chapter')) {
-        if (currentStep.includes('save')) {
-            return stepOrder['chapter_save'];
-        } else if (currentStep.includes('quality') || currentStep.includes('assessment')) {
-            return stepOrder['chapter_quality_assessment'];
-        } else if (currentStep.includes('completed')) {
-            return stepOrder['chapter_completed'];
-        } else if (currentStep.includes('improvement')) {
-            return stepOrder['content_improvement'];
-        } else {
-            return stepOrder['chapter_writing'];
-        }
-    } else if (currentStep.includes('content') && currentStep.includes('improvement')) {
-        return stepOrder['content_improvement'];
-    }
-    return null;
-};
+            <div class="card shadow-sm mb-4">
+                <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
+                    <span><i class="fas fa-shield-halved me-2"></i>Canon 档案一致性</span>
+                    <button class="btn btn-sm btn-dark" onclick="App.runCanon()">
+                        <i class="fas fa-rotate me-1"></i>重新校验
+                    </button>
+                </div>
+                <div class="card-body" id="canonPane"><div class="text-muted small">加载中…</div></div>
+            </div>
 
-// 检查步骤是否被执行过
-const wasStepExecuted = (stepKey, currentStep) => {
-    // 简单的启发式判断：如果当前步骤包含了该步骤的关键词，说明执行过
-    if (stepKey === 'storyline_improvement') {
-        return currentStep.includes('storyline') && currentStep.includes('improvement');
-    } else if (stepKey === 'content_improvement') {
-        return currentStep.includes('content') && currentStep.includes('improvement');
-    }
-    return false;
-};
+            <div class="card shadow-sm mb-4">
+                <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
+                    <span><i class="fas fa-sitemap me-2"></i>Blueprint 蓝图与章节卡</span>
+                    <button class="btn btn-sm btn-light" onclick="App.runBlueprint()">
+                        <i class="fas fa-${s.blueprint ? 'rotate' : 'magic'} me-1"></i>${s.blueprint ? '重生成' : '生成蓝图'}
+                    </button>
+                </div>
+                <div class="card-body" id="blueprintPane"><div class="text-muted small">加载中…</div></div>
+            </div>
 
-const displayContinuationWorkflow = (continuationData) => {
-    const container = document.getElementById('continuation-container');
-    
-    // 增强的小说信息展示
-    const novelInfoHtml = `
-        <div class="novel-info-enhanced mb-4">
-            <div class="card border-0 shadow-sm">
+            <div class="card shadow-sm mb-4">
+                <div class="card-header bg-primary text-white">
+                    <i class="fas fa-feather-pointed me-2"></i>章节生成
+                </div>
                 <div class="card-body">
-                    <div class="row align-items-center">
-                        <div class="col-md-8">
-                            <h4 class="novel-title-enhanced mb-2">
-                                <i class="fas fa-book-open text-primary me-2"></i>
-                                ${continuationData.novel_title || '未知小说'}
-                            </h4>
-                            <div class="novel-stats d-flex flex-wrap gap-3 mb-2">
-                                <span class="stat-item">
-                                    <i class="fas fa-chapter text-info me-1"></i>
-                                    已写章节: <strong>${continuationData.chapter_count || 0}</strong>
-                                </span>
-                                <span class="stat-item">
-                                    <i class="fas fa-calendar text-success me-1"></i>
-                                    最后更新: <strong>今天</strong>
-                                </span>
-                                <span class="stat-item">
-                                    <i class="fas fa-clock text-warning me-1"></i>
-                                    状态: <strong>${continuationData.current_step === 'chapter_completed' ? '已完成' : '进行中'}</strong>
-                                </span>
-                            </div>
-                            ${continuationData.user_requirements ? `
-                                <div class="continuation-requirements">
-                                    <small class="text-muted">
-                                        <i class="fas fa-edit me-1"></i>
-                                        续写需求: ${continuationData.user_requirements}
-                                    </small>
-                                </div>
-                            ` : ''}
+                    <div class="row g-2">
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1">起始章</label>
+                            <input class="form-control form-control-sm" type="number" id="genStart" value="${s.chapters_done + 1}" min="1" max="${n.total_chapters_planned}" />
                         </div>
-                        <div class="col-md-4 text-end">
-                            ${continuationData.current_step === 'chapter_completed' ? `
-                                <div class="d-flex flex-column gap-2">
-                                    <button class="btn btn-primary btn-lg" onclick="startNextChapter()">
-                                        <i class="fas fa-plus-circle me-2"></i>
-                                        写下一章
-                                    </button>
-           <button class="btn btn-success btn-sm" onclick="showQuickContinuationDialog()">
-               <i class="fas fa-bolt me-2"></i>
-               快速续写
-           </button>
-           <button class="btn btn-info btn-sm" onclick="checkQuickContinuationProgress()">
-               <i class="fas fa-chart-line me-2"></i>
-               查看进度
-           </button>
-                                </div>
-                            ` : `
-                                <button class="btn btn-secondary btn-lg" disabled>
-                                    <i class="fas fa-clock me-2"></i>
-                                    续写进行中
-                                </button>
-                            `}
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1">结束章</label>
+                            <input class="form-control form-control-sm" type="number" id="genEnd" value="${Math.min(s.chapters_done + 5, n.total_chapters_planned)}" min="1" max="${n.total_chapters_planned}" />
                         </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1">目标字数</label>
+                            <input class="form-control form-control-sm" type="number" id="genWords" value="2300" min="500" max="6000" step="100" />
+                        </div>
+                        <div class="col-md-3 d-flex align-items-end">
+                            <button class="btn btn-primary btn-sm w-100" onclick="App.startGenerateChapters()" ${!s.blueprint ? "disabled" : ""}>
+                                <i class="fas fa-rocket me-1"></i>开始生成
+                            </button>
+                        </div>
+                    </div>
+                    <div class="form-text mt-2">
+                        生成在后台异步运行，可在右上角"任务"查看实时进度。
+                        ${!s.blueprint ? '<span class="text-danger ms-2">需要先生成蓝图</span>' : ""}
                     </div>
                 </div>
             </div>
         </div>
-    `;
-    
-    // 参考新书开发的UI设计，使用类似的工作流显示
-    const steps = [
-        { key: 'storyline_generation', name: '续写故事线生成', icon: 'fas fa-route', description: 'AI分析现有故事并生成续写大纲' },
-        { key: 'chapter_writing', name: '续写章节写作', icon: 'fas fa-pen-fancy', description: '根据故事线创作新的章节内容' },
-        { key: 'chapter_completed', name: '续写完成', icon: 'fas fa-flag-checkered', description: '章节已保存，可以继续续写' }
-    ];
-    
-    const currentStep = continuationData.current_step;
-    
-    const stepsHtml = steps.map(step => {
-        let status = 'pending';
-        let statusClass = 'pending';
-        
-        const currentStepIndex = steps.findIndex(s => s.key === currentStep);
-        const stepIndex = steps.indexOf(step);
-        
-        // 处理当前步骤
-        if (step.key === currentStep) {
-            if (currentStep === 'chapter_completed') {
-                status = 'completed';
-                statusClass = 'completed';
-            } else {
-                status = 'current';
-                statusClass = 'current';
-            }
-        } 
-        // 处理已完成步骤
-        else if (currentStepIndex >= 0 && stepIndex < currentStepIndex) {
-            status = 'completed';
-            statusClass = 'completed';
+
+        <div class="col-lg-5">
+            <div class="card shadow-sm mb-4">
+                <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+                    <span><i class="fas fa-users me-2"></i>角色档案</span>
+                    <button class="btn btn-sm btn-light" onclick="App.openCharsEditor()">
+                        <i class="fas fa-pen me-1"></i>编辑
+                    </button>
+                </div>
+                <div class="card-body p-0" id="charsPane"><div class="text-muted small p-3">加载中…</div></div>
+            </div>
+
+            <div class="card shadow-sm mb-4">
+                <div class="card-header bg-secondary text-white d-flex justify-content-between align-items-center">
+                    <span><i class="fas fa-list-ol me-2"></i>章节进度</span>
+                    <button class="btn btn-sm btn-outline-light" onclick="App.go('#/novel/${novelId}/chapters')">查看全部</button>
+                </div>
+                <div class="card-body" id="chaptersMiniPane"><div class="text-muted small">加载中…</div></div>
+            </div>
+        </div>
+    </div>`;
+
+    // 计算"已完成"进度，刷新底层 done 横线宽度
+    paintTimeline([true, s.storyline_expanded, s.canon_report, s.blueprint, s.chapters_done > 0]);
+
+    Promise.all([
+        loadStorylinePane(novelId),
+        loadCanonPane(novelId),
+        loadBlueprintPane(novelId),
+        loadCharsPane(novelId),
+        loadChaptersMiniPane(novelId),
+    ]);
+}
+
+function stageStep(idx, name, sub, done, icon, mode) {
+    const m = mode || (done ? "done" : "todo");
+    return `
+        <div class="stage-step ${m}">
+            <div class="stage-circle"><i class="${icon}"></i></div>
+            <div class="stage-meta">
+                <div class="stage-name">${idx}. ${name}</div>
+                <div class="stage-sub">${sub}</div>
+            </div>
+        </div>`;
+}
+
+/** 计算已完成进度的横线宽度（百分比） */
+function paintTimeline(states) {
+    // states 是 5 个 bool；找到最后一个 true 的位置 idx，进度 = (idx + 0.5) / 5
+    const el = document.getElementById("timelineDone");
+    if (!el) return;
+    let lastDone = -1;
+    for (let i = 0; i < states.length; i++) if (states[i]) lastDone = i;
+    if (lastDone < 0) { el.style.width = "0%"; return; }
+    const total = states.length;
+    // 横线从第 0 个节点中心开始，到最后一个完成节点的中心
+    // 节点中心位置：(i + 0.5) / total，第 0 个就是 0.5/5=10%
+    // 起点：10%，终点：(lastDone + 0.5)/total
+    const startPct = 100 / total / 2;
+    const endPct = (lastDone + 0.5) * 100 / total;
+    el.style.left = `${startPct}%`;
+    el.style.width = `${endPct - startPct}%`;
+}
+
+async function loadStorylinePane(novelId) {
+    try {
+        const s = await Util.get(`/novels/${novelId}/storyline`);
+        const ov = s.overall_storyline || {};
+        if (!ov.main_goal) {
+            document.getElementById("storylinePane").innerHTML =
+                `<div class="text-muted">storyline 尚未展开骨架。</div>`;
+            return;
         }
-        // 处理未找到当前步骤的情况（后端设置了前端未定义的步骤）
-        else if (currentStepIndex === -1) {
-            // 智能推断：根据后端步骤名称推断前端步骤状态
-            if (currentStep.includes('storyline')) {
-                // 后端在处理故事线相关步骤
-                if (step.key === 'storyline_generation') {
-                    status = 'completed';  // 故事线生成已完成
-                    statusClass = 'completed';
-                } else if (step.key === 'chapter_writing') {
-                    status = 'current';    // 下一步是章节写作
-                    statusClass = 'current';
-                }
-            } else if (currentStep.includes('chapter') || currentStep.includes('content')) {
-                // 后端在处理章节相关步骤
-                if (step.key === 'storyline_generation') {
-                    status = 'completed';  // 故事线生成已完成
-                    statusClass = 'completed';
-                } else if (step.key === 'chapter_writing') {
-                    status = 'completed';  // 章节写作已完成
-                    statusClass = 'completed';
-                }
-            } else if (currentStep.includes('save')) {
-                // 后端在保存步骤
-                if (step.key === 'storyline_generation') {
-                    status = 'completed';
-                    statusClass = 'completed';
-                } else if (step.key === 'chapter_writing') {
-                    status = 'completed';
-                    statusClass = 'completed';
-                } else if (step.key === 'chapter_completed') {
-                    status = 'current';
-                    statusClass = 'current';
-                }
-            }
+        const a1 = ov.act1 || {}, a2 = ov.act2 || {}, a3 = ov.act3 || {};
+        const themes = (ov.themes || []).map(t => `<span class="badge bg-success-subtle text-success me-1">${Util.escape(t)}</span>`).join("");
+        const cf = ov.core_conflict || {};
+
+        document.getElementById("storylinePane").innerHTML = `
+            <div class="mb-3">
+                <div class="text-muted small mb-1"><i class="fas fa-bullseye me-1"></i>主角终极目标</div>
+                <div class="fw-bold">${Util.escape(ov.main_goal)}</div>
+            </div>
+            ${cf.external || cf.internal ? `
+            <div class="mb-3">
+                <div class="text-muted small mb-1"><i class="fas fa-bolt me-1"></i>核心冲突</div>
+                <ul class="mb-0 small">
+                    ${cf.external ? `<li><b>外在</b>：${Util.escape(cf.external)}</li>` : ""}
+                    ${cf.internal ? `<li><b>内在</b>：${Util.escape(cf.internal)}</li>` : ""}
+                    ${cf.interpersonal ? `<li><b>人际</b>：${Util.escape(cf.interpersonal)}</li>` : ""}
+                </ul>
+            </div>` : ""}
+            ${a1.setup || a2.confrontation || a3.climax ? `
+            <div class="acts-grid">
+                <div class="act-block act1">
+                    <div class="act-label">第一幕 · Setup</div>
+                    <div class="act-content">${Util.escape((a1.setup || "").slice(0, 110))}…</div>
+                </div>
+                <div class="act-block act2">
+                    <div class="act-label">第二幕 · 中点</div>
+                    <div class="act-content">${Util.escape((a2.midpoint_crisis || a2.confrontation || "").slice(0, 110))}…</div>
+                </div>
+                <div class="act-block act3">
+                    <div class="act-label">第三幕 · Climax</div>
+                    <div class="act-content">${Util.escape((a3.climax || "").slice(0, 110))}…</div>
+                </div>
+            </div>` : ""}
+            ${themes ? `<div class="mt-2"><div class="text-muted small mb-1">主题</div>${themes}</div>` : ""}
+        `;
+    } catch (e) {
+        document.getElementById("storylinePane").innerHTML =
+            `<div class="text-danger small">${Util.escape(e.message)}</div>`;
+    }
+}
+
+async function loadCanonPane(novelId) {
+    try {
+        const r = await Util.get(`/novels/${novelId}/canon`);
+        if (!r || !r.summary) {
+            document.getElementById("canonPane").innerHTML =
+                `<div class="text-muted">尚无校验报告，点击"重新校验"。</div>`;
+            return;
         }
-        
-        return `
-            <div class="workflow-step ${statusClass}">
-                <div class="step-header" onclick="${status === 'completed' ? `toggleStepDetails('${step.key}')` : ''}" style="${status === 'completed' ? 'cursor: pointer;' : ''}">
-                    <div class="step-icon ${statusClass}">
-                        <i class="${step.icon}"></i>
+        const s = r.summary || {};
+        const issues = r.issues || [];
+        const sevColor = { ERROR: "danger", WARNING: "warning", INFO: "info" };
+        document.getElementById("canonPane").innerHTML = `
+            <div class="d-flex gap-3 mb-3 flex-wrap">
+                <div class="canon-stat danger">
+                    <div class="canon-stat-num">${s.ERROR || 0}</div>
+                    <div class="canon-stat-lbl">ERROR</div>
+                </div>
+                <div class="canon-stat warning">
+                    <div class="canon-stat-num">${s.WARNING || 0}</div>
+                    <div class="canon-stat-lbl">WARNING</div>
+                </div>
+                <div class="canon-stat info">
+                    <div class="canon-stat-num">${s.INFO || 0}</div>
+                    <div class="canon-stat-lbl">INFO</div>
+                </div>
+                <div class="ms-auto small text-muted align-self-center text-end">
+                    主角：${Util.escape(r.registered_main || "—")}<br/>
+                    配角：${(r.registered_supporting || []).map(Util.escape).join(", ") || "—"}
+                </div>
+            </div>
+            ${issues.length === 0
+                ? `<div class="alert alert-success mb-0 py-2 small">
+                       <i class="fas fa-circle-check me-1"></i> 全部规则通过</div>`
+                : issues.slice(0, 8).map(i => `
+                    <div class="issue-item issue-${(i.severity || "INFO").toLowerCase()}">
+                        <div class="d-flex justify-content-between flex-wrap">
+                            <span><span class="badge bg-${sevColor[i.severity] || "secondary"} me-2">${Util.escape(i.rule_id)}</span>${Util.escape(i.title)}</span>
+                            <span class="text-muted small">${Util.escape(i.subject || "")}</span>
+                        </div>
+                        <div class="small text-muted mt-1">${Util.escape(i.detail)}</div>
                     </div>
+                `).join("")}
+            ${issues.length > 8 ? `<div class="text-muted small text-end">…还有 ${issues.length - 8} 条</div>` : ""}
+        `;
+    } catch (e) {
+        document.getElementById("canonPane").innerHTML =
+            `<div class="text-danger small">${Util.escape(e.message)}</div>`;
+    }
+}
+
+async function loadBlueprintPane(novelId) {
+    try {
+        const bp = await Util.get(`/novels/${novelId}/blueprint`);
+        if (!bp || !bp.meta) {
+            document.getElementById("blueprintPane").innerHTML =
+                `<div class="text-muted">蓝图尚未生成。点击上方"生成蓝图"按钮启动。</div>`;
+            return;
+        }
+        const meta = bp.meta || {};
+        const arc = bp.global_arc || {};
+        const vols = bp.volumes || arc.volumes || [];
+        const ledger = bp.global_foreshadow_ledger || bp.ledger || [];
+        document.getElementById("blueprintPane").innerHTML = `
+            <div class="row g-3 mb-3">
+                <div class="col-sm-6"><div class="text-muted small">主题</div><div>${Util.escape(meta.core_theme || "—")}</div></div>
+                <div class="col-sm-6"><div class="text-muted small">基调</div><div>${Util.escape(meta.tone || "—")}</div></div>
+            </div>
+            <div class="text-muted small mb-1">三幕节奏</div>
+            <div class="acts-mini mb-3">
+                <span class="act-mini bg-warning-subtle">第一幕 ${(arc.act1_range || []).join("-")}</span>
+                <span class="act-mini bg-danger-subtle">第二幕 ${(arc.act2_range || []).join("-")} 中点 第${arc.midpoint_chapter || "?"}章</span>
+                <span class="act-mini bg-success-subtle">第三幕 ${(arc.act3_range || []).join("-")}</span>
+            </div>
+            <div class="text-muted small mb-1">卷划分（${vols.length} 卷，点击展开看每章详情）</div>
+            <div class="vol-list mb-3">
+                ${vols.map(v => {
+                    const idx = v.volume_index || v.index;
+                    const isOpen = State.bp.expandedVolume === idx;
+                    return `
+                    <div class="vol-row vol-clickable ${isOpen ? "expanded" : ""}"
+                         onclick="App.toggleVolumeDetail(${idx})">
+                        <div class="vol-idx">卷${idx}</div>
+                        <div class="flex-grow-1">
+                            <div class="vol-title">${Util.escape(v.title || "")}</div>
+                            <div class="vol-meta small text-muted">
+                                ch ${(v.chapter_range || []).join("-")} · ${Util.escape(v.phase || "")}
+                            </div>
+                        </div>
+                        <i class="fas fa-chevron-${isOpen ? 'up' : 'down'} text-muted ms-2"></i>
+                    </div>
+                    <div class="vol-detail" id="volDetail-${idx}" style="display:${isOpen ? "block" : "none"}">
+                        ${isOpen ? '<div class="text-muted small p-2">加载中…</div>' : ''}
+                    </div>`;
+                }).join("")}
+            </div>
+            ${ledger.length ? `
+            <div class="text-muted small mb-1">全局伏笔账本（${ledger.length} 条）</div>
+            <div class="ledger-list small">
+                ${ledger.slice(0, 6).map(f => `
+                    <div class="ledger-row">
+                        <span class="badge bg-light text-dark me-2">${Util.escape(f.id || "F?")}</span>
+                        卷${f.plant_volume || "?"} → 卷${f.payoff_volume || "?"} ·
+                        ${Util.escape(((f.keyword || f.title || f.description) || "").slice(0, 40))}
+                    </div>`).join("")}
+                ${ledger.length > 6 ? `<div class="text-muted text-end">…还有 ${ledger.length - 6} 条</div>` : ""}
+            </div>` : ""}
+        `;
+        // 如果有已展开的卷，立即拉数据
+        if (State.bp.expandedVolume != null) {
+            loadVolumeDetail(novelId, State.bp.expandedVolume);
+        }
+    } catch (e) {
+        document.getElementById("blueprintPane").innerHTML =
+            `<div class="text-danger small">${Util.escape(e.message)}</div>`;
+    }
+}
+
+async function loadVolumeDetail(novelId, volIdx) {
+    const target = document.getElementById(`volDetail-${volIdx}`);
+    if (!target) return;
+    const cacheKey = novelId + ":" + volIdx;
+    let cards = State.bpVolumeCards[cacheKey];
+    if (!cards) {
+        try {
+            const data = await Util.get(`/novels/${novelId}/volumes/${volIdx}/cards`);
+            cards = data.chapter_cards || [];
+            State.bpVolumeCards[cacheKey] = cards;
+        } catch (e) {
+            target.innerHTML = `<div class="text-danger small p-2">${Util.escape(e.message)}</div>`;
+            return;
+        }
+    }
+    if (!cards || cards.length === 0) {
+        target.innerHTML = `<div class="text-muted small p-2">本卷尚未展开章节卡。生成首章时会自动展开。</div>`;
+        return;
+    }
+    target.innerHTML = cards.map(c => renderChapterCard(novelId, c)).join("");
+}
+
+function renderChapterCard(novelId, c) {
+    const ma = c.must_appear || {};
+    const beats = c.beats || c.scene_beats || [];
+    const fp = c.foreshadow_plant || c.plant_foreshadow || [];
+    const fd = c.foreshadow_payoff || c.payoff_foreshadow || [];
+    const tension = c.tension != null ? c.tension : (c.tension_level || 0);
+    const tone = c.tone || c.color_tone || "";
+    const hook = c.ending_hook || c.hook || "";
+    return `
+    <div class="ch-card-mini">
+        <div class="d-flex align-items-center gap-2 mb-1">
+            <span class="badge bg-primary">第${c.chapter_number}章</span>
+            <span class="fw-bold flex-grow-1">${Util.escape(c.title || "")}</span>
+            ${tension ? `<span class="badge bg-danger-subtle text-danger" title="张力">⚡${tension}</span>` : ""}
+            ${tone ? `<span class="badge bg-light text-dark" title="色调">${Util.escape(tone)}</span>` : ""}
+            <button class="btn btn-sm btn-outline-secondary" onclick="event.stopPropagation();App.go('#/novel/${novelId}/chapter/${c.chapter_number}')">
+                <i class="fas fa-eye"></i>
+            </button>
+        </div>
+        ${c.summary ? `<div class="ch-card-summary text-muted small mb-2">${Util.escape(c.summary)}</div>` : ""}
+        ${beats.length ? `
+            <div class="ch-card-beats small">
+                ${beats.map(b => `<div class="beat-item"><i class="fas fa-circle-dot me-1 text-primary"></i>${Util.escape(typeof b === "string" ? b : (b.event || b))}</div>`).join("")}
+            </div>` : ""}
+        <div class="d-flex gap-2 flex-wrap mt-2 small text-muted">
+            ${(ma.characters || []).map(x => `<span class="ma-pill ma-c">👤 ${Util.escape(x)}</span>`).join("")}
+            ${(ma.locations || []).map(x => `<span class="ma-pill ma-l">📍 ${Util.escape(x)}</span>`).join("")}
+            ${(ma.objects || []).map(x => `<span class="ma-pill ma-o">📦 ${Util.escape(x)}</span>`).join("")}
+        </div>
+        ${(fp.length || fd.length) ? `
+            <div class="small text-muted mt-2">
+                ${fp.length ? `<div><i class="fas fa-seedling text-success me-1"></i>埋伏笔：${fp.map(Util.escape).join("、")}</div>` : ""}
+                ${fd.length ? `<div><i class="fas fa-bullseye text-danger me-1"></i>收伏笔：${fd.map(Util.escape).join("、")}</div>` : ""}
+            </div>` : ""}
+        ${hook ? `<div class="ch-card-hook mt-2 small"><i class="fas fa-quote-left me-1"></i>${Util.escape(hook)}</div>` : ""}
+    </div>`;
+}
+
+async function loadCharsPane(novelId) {
+    try {
+        const c = await Util.get(`/novels/${novelId}/characters`);
+        const main = c.main_character || {};
+        const sup = c.supporting_characters || [];
+        document.getElementById("charsPane").innerHTML = `
+            <div class="char-row main">
+                <div class="char-avatar"><i class="fas fa-crown"></i></div>
+                <div class="flex-grow-1">
+                    <div class="char-name">${Util.escape((main.basic_info || {}).name || "—")}
+                        <span class="char-role">主角</span></div>
+                    <div class="char-meta small text-muted">
+                        ${Util.escape((main.basic_info || {}).gender || "—")} ·
+                        ${Util.escape((main.basic_info || {}).age || "—")} ·
+                        ${Util.escape((main.basic_info || {}).occupation || "—")}
+                    </div>
+                </div>
+            </div>
+            ${sup.map(s => `
+                <div class="char-row">
+                    <div class="char-avatar"><i class="fas fa-user"></i></div>
                     <div class="flex-grow-1">
-                        <h5 class="step-title">${step.name}</h5>
-                        <p class="step-description">
-                            ${step.description}
-                        </p>
-                        <div class="step-status">
-                            <span class="badge bg-${status === 'completed' ? 'success' : status === 'current' ? 'primary' : 'secondary'}">
-                                ${status === 'completed' ? '已完成' : 
-                                  status === 'current' ? '进行中' : '等待中'}
+                        <div class="char-name">${Util.escape((s.basic_info || {}).name || "—")}
+                            <span class="char-role">${Util.escape(s.role || "配角")}</span></div>
+                        <div class="char-meta small text-muted">
+                            ${Util.escape((s.basic_info || {}).gender || "—")} ·
+                            ${Util.escape((s.basic_info || {}).age || "—")} ·
+                            ${Util.escape((s.basic_info || {}).occupation || "—")}
+                        </div>
+                    </div>
+                </div>
+            `).join("")}
+        `;
+    } catch (e) {
+        document.getElementById("charsPane").innerHTML =
+            `<div class="text-danger small p-3">${Util.escape(e.message)}</div>`;
+    }
+}
+
+async function loadChaptersMiniPane(novelId) {
+    try {
+        const list = await Util.get(`/novels/${novelId}/chapters`);
+        if (list.length === 0) {
+            document.getElementById("chaptersMiniPane").innerHTML =
+                `<div class="text-muted small">尚未生成任何章节。</div>`;
+            return;
+        }
+        const recent = list.slice(-6).reverse();
+        document.getElementById("chaptersMiniPane").innerHTML = recent.map(c => `
+            <a href="javascript:void(0)" class="chapter-mini" onclick="App.go('#/novel/${novelId}/chapter/${c.chapter_number}')">
+                <span class="ch-num">第${c.chapter_number}章</span>
+                <span class="ch-title">${Util.escape(c.title)}</span>
+                <span class="ch-meta">${c.word_count}字 · ${c.passed ? "<i class='fas fa-check text-success'></i>" : "<i class='fas fa-times text-danger'></i>"}</span>
+            </a>
+        `).join("");
+    } catch (e) {
+        document.getElementById("chaptersMiniPane").innerHTML =
+            `<div class="text-danger small">${Util.escape(e.message)}</div>`;
+    }
+}
+
+/* ============================================================
+ * 视图 3：章节网格
+ * ============================================================ */
+async function renderChaptersGrid(root, novelId) {
+    const n = await Util.get(`/novels/${novelId}`);
+    const list = await Util.get(`/novels/${novelId}/chapters`);
+    State.currentNovelId = novelId;
+    const total = n.total_chapters_planned;
+    const map = Object.fromEntries(list.map(c => [c.chapter_number, c]));
+
+    const cells = [];
+    for (let i = 1; i <= total; i++) {
+        const c = map[i];
+        if (c) {
+            cells.push(`
+                <a href="javascript:void(0)" class="ch-cell done"
+                   onclick="App.go('#/novel/${novelId}/chapter/${i}')"
+                   title="${Util.escape(c.title)} · ${c.word_count}字">
+                    <div class="ch-cell-num">${i}</div>
+                    <div class="ch-cell-title">${Util.escape(c.title)}</div>
+                    <div class="ch-cell-meta">${c.word_count}字</div>
+                </a>`);
+        } else {
+            cells.push(`
+                <div class="ch-cell todo" title="尚未生成">
+                    <div class="ch-cell-num">${i}</div>
+                    <div class="ch-cell-title text-muted">未生成</div>
+                </div>`);
+        }
+    }
+
+    root.innerHTML = `
+        <div class="d-flex align-items-center mb-4 flex-wrap gap-2">
+            <button class="btn btn-sm btn-outline-secondary" onclick="App.go('#/novel/${novelId}')"><i class="fas fa-arrow-left"></i></button>
+            <h3 class="mb-0">${Util.escape(n.title)} · 章节库</h3>
+            <span class="ms-2 badge bg-success">${list.length}</span>
+            <span class="ms-1 badge bg-light text-dark">/ ${total} 章</span>
+        </div>
+        <div class="ch-grid">${cells.join("")}</div>`;
+}
+
+/* ============================================================
+ * 视图 4：单章阅读 + 编辑
+ * ============================================================ */
+async function renderChapter(root, novelId, n) {
+    const ch = await Util.get(`/novels/${novelId}/chapters/${n}`);
+    State.currentNovelId = novelId;
+    const meta = ch.meta || {};
+    const v = meta.validation || {};
+    const ma = (v.must_appear || {});
+
+    // 必现项实际命中提取（在正文里 includes）
+    const hitTag = (name, body) => body && body.includes(name)
+        ? `<span class="ma-hit"><i class="fas fa-check"></i> ${Util.escape(name)}</span>`
+        : `<span class="ma-miss"><i class="fas fa-xmark"></i> ${Util.escape(name)}</span>`;
+
+    root.innerHTML = `
+        <div class="reader-toolbar d-flex align-items-center mb-3 flex-wrap gap-2">
+            <button class="btn btn-sm btn-outline-secondary" onclick="App.go('#/novel/${novelId}/chapters')" title="返回章节库">
+                <i class="fas fa-arrow-left"></i>
+            </button>
+            <div class="flex-grow-1">
+                <h4 class="mb-1" id="chTitleDisp">${Util.escape(ch.title)}</h4>
+                <div class="text-muted small">
+                    第 ${ch.chapter_number} 章 · <span id="chWcDisp">${meta.word_count || 0}</span> 字 ·
+                    主角出现 ${v.protagonist_count || 0} 次
+                    ${v.word_count_ok ? '<span class="badge bg-success ms-2">PASS</span>' : '<span class="badge bg-warning ms-2">字数偏差</span>'}
+                    ${v._manually_edited ? '<span class="badge bg-info ms-2">已手动编辑</span>' : ''}
+                </div>
+            </div>
+            <div class="btn-group btn-group-sm" title="字体大小">
+                <button class="btn btn-outline-secondary" onclick="App.readerFont(-1)"><i class="fas fa-minus"></i></button>
+                <button class="btn btn-outline-secondary" onclick="App.readerFont(0)"><span id="readerFontLabel">${State.reader.fontSize}</span></button>
+                <button class="btn btn-outline-secondary" onclick="App.readerFont(1)"><i class="fas fa-plus"></i></button>
+            </div>
+            <button class="btn btn-sm btn-outline-secondary" onclick="App.toggleFullscreen()" title="全屏阅读 (F)">
+                <i class="fas fa-expand" id="fullscreenIcon"></i>
+            </button>
+            <div class="btn-group btn-group-sm">
+                <button class="btn btn-outline-secondary" onclick="App.go('#/novel/${novelId}/chapter/${n-1}')" ${n <= 1 ? "disabled" : ""} title="上一章 ←">
+                    <i class="fas fa-chevron-left"></i>
+                </button>
+                <button class="btn btn-outline-warning" id="chEditBtn" onclick="App.toggleChapterEdit()">
+                    <i class="fas fa-pen me-1"></i>编辑
+                </button>
+                <button class="btn btn-outline-secondary" onclick="App.go('#/novel/${novelId}/chapter/${n+1}')" title="下一章 →">
+                    <i class="fas fa-chevron-right"></i>
+                </button>
+            </div>
+        </div>
+
+        <div class="row g-4" id="readerLayout">
+            <div class="col-lg-8" id="readerMain">
+                <div id="chReader">
+                    <div class="reader-card" id="readerCard" style="font-size:${State.reader.fontSize}px">${Util.paragraphize(ch.body)}</div>
+                    <div class="reader-progress" id="readerProgress"></div>
+                </div>
+                <div id="chEditor" style="display:none">
+                    <div class="card shadow-sm">
+                        <div class="card-header bg-warning-subtle">
+                            <input class="form-control" id="chEditTitle" value="${Util.escape(ch.title)}" />
+                        </div>
+                        <div class="card-body">
+                            <textarea class="form-control reader-editor" id="chEditBody" rows="22">${Util.escape(ch.body)}</textarea>
+                            <div class="d-flex gap-2 mt-3 align-items-center">
+                                <button class="btn btn-success" onclick="App.saveChapter(${n})">
+                                    <i class="fas fa-save me-1"></i>保存 (Ctrl+S)
+                                </button>
+                                <button class="btn btn-secondary" onclick="App.toggleChapterEdit()">
+                                    <i class="fas fa-times me-1"></i>取消
+                                </button>
+                                <span class="ms-auto small text-muted">字数 <span id="chEditWc">0</span></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-4" id="readerSide">
+                <div class="card shadow-sm mb-3">
+                    <div class="card-header bg-light"><i class="fas fa-clipboard-check me-2"></i>必现项命中情况</div>
+                    <div class="card-body small">
+                        <div class="mb-2"><b>人物</b>：${(ma.characters && ma.characters.expected || []).map(x => hitTag(x, ch.body)).join(" ") || "—"}</div>
+                        <div class="mb-2"><b>场景</b>：${(ma.locations && ma.locations.expected || []).map(x => hitTag(x, ch.body)).join(" ") || "—"}</div>
+                        <div class="mb-2"><b>物件</b>：${(ma.objects && ma.objects.expected || []).map(x => hitTag(x, ch.body)).join(" ") || "—"}</div>
+                        <hr/>
+                        <div>字数：${meta.word_count} / 目标 ${v.word_count_target || "—"}</div>
+                        <div>主角次数：${v.protagonist_count || 0}</div>
+                    </div>
+                </div>
+                <div class="text-muted small text-center">
+                    💡 快捷键：<kbd>←</kbd>/<kbd>→</kbd> 翻页 ·
+                    <kbd>F</kbd> 全屏 · <kbd>E</kbd> 编辑 · <kbd>Ctrl+S</kbd> 保存
+                </div>
+            </div>
+        </div>`;
+
+    // 应用全屏状态
+    if (State.reader.fullscreen) document.body.classList.add("reader-fullscreen");
+    else document.body.classList.remove("reader-fullscreen");
+
+    // 编辑模式下实时统计字数
+    const ta = document.getElementById("chEditBody");
+    if (ta) {
+        const updateWc = () => {
+            const el = document.getElementById("chEditWc");
+            if (el) el.textContent = (ta.value || "").replace(/\s+/g, "").length;
+        };
+        ta.addEventListener("input", updateWc);
+        updateWc();
+    }
+
+    // 阅读位置记忆 + 让快捷键能立刻生效（清空遗留焦点 → 让 main 区聚焦）
+    setTimeout(() => {
+        const key = `inkai_scroll_${novelId}_${n}`;
+        const saved = parseInt(localStorage.getItem(key) || "0");
+        if (saved > 0) {
+            window.scrollTo({ top: saved, behavior: "instant" });
+        }
+        const onScroll = () => {
+            localStorage.setItem(key, String(window.scrollY));
+            const card = document.getElementById("readerCard");
+            const prog = document.getElementById("readerProgress");
+            if (card && prog) {
+                const total = document.body.scrollHeight - window.innerHeight;
+                const pct = total > 0 ? Math.min(100, Math.max(0, window.scrollY / total * 100)) : 0;
+                prog.style.width = pct + "%";
+            }
+        };
+        window.addEventListener("scroll", onScroll, { passive: true });
+        onScroll();
+        State._onScroll = onScroll;
+
+        // 关键：把焦点从遗留的 navbar 链接 / "进入" 按钮上挪走
+        // 否则方向键会被浏览器用作 "Tab between focusable" 而吞掉
+        try { document.activeElement && document.activeElement.blur && document.activeElement.blur(); } catch (_) {}
+        const main = document.getElementById("readerMain");
+        if (main) { main.setAttribute("tabindex", "-1"); main.focus({ preventScroll: true }); }
+    }, 50);
+}
+
+/* ============================================================
+ * 视图 5：全本审计
+ * ============================================================ */
+async function renderAudit(root, novelId) {
+    const n = await Util.get(`/novels/${novelId}`);
+    State.currentNovelId = novelId;
+    let rpt = await Util.get(`/novels/${novelId}/audit`);
+    if (!rpt || !rpt.dimension_scores) {
+        root.innerHTML = `
+            <div class="d-flex align-items-center mb-4 flex-wrap gap-2">
+                <button class="btn btn-sm btn-outline-secondary" onclick="App.go('#/novel/${novelId}')"><i class="fas fa-arrow-left"></i></button>
+                <h3 class="mb-0">${Util.escape(n.title)} · 全本审计</h3>
+            </div>
+            <div class="empty-state text-center py-5">
+                <i class="fas fa-chart-pie fa-3x text-muted mb-3"></i>
+                <h5 class="text-muted mb-3">尚无审计报告</h5>
+                <button class="btn btn-info" onclick="App.runAudit()">
+                    <i class="fas fa-play me-2"></i>立即跑一次审计
+                </button>
+            </div>`;
+        return;
+    }
+
+    const dims = rpt.dimension_scores || {};
+    const labels = Object.keys(dims).map(k => k.replace(/^M\d+_/, ""));
+    const data = Object.values(dims);
+    const findings = rpt.findings || [];
+    const sevColor = { ERROR: "danger", WARNING: "warning", INFO: "info" };
+
+    root.innerHTML = `
+        <div class="d-flex align-items-center mb-4 flex-wrap gap-2">
+            <button class="btn btn-sm btn-outline-secondary" onclick="App.go('#/novel/${novelId}')"><i class="fas fa-arrow-left"></i></button>
+            <div class="flex-grow-1">
+                <h3 class="mb-1">${Util.escape(n.title)} · 全本审计</h3>
+                <div class="text-muted small">综合得分 <b class="audit-score-big">${rpt.overall_score}</b> / 100 ·
+                    覆盖 ${rpt.chapters_loaded}/${rpt.chapters_total} 章</div>
+            </div>
+            <button class="btn btn-info" onclick="App.runAudit()"><i class="fas fa-rotate me-1"></i>重新审计</button>
+        </div>
+        <div class="row g-4">
+            <div class="col-lg-6">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-info text-white"><i class="fas fa-chart-pie me-2"></i>六维雷达</div>
+                    <div class="card-body"><canvas id="auditRadar" height="320"></canvas></div>
+                </div>
+            </div>
+            <div class="col-lg-6">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-secondary text-white">
+                        <i class="fas fa-list-check me-2"></i>问题清单（${findings.length} 条）
+                    </div>
+                    <div class="card-body" style="max-height: 480px; overflow-y: auto;">
+                        ${findings.length === 0 ? `<div class="alert alert-success mb-0 py-2 small">
+                            <i class="fas fa-circle-check me-1"></i>未发现问题</div>` : ""}
+                        ${findings.map(f => `
+                            <div class="issue-item issue-${(f.severity || "INFO").toLowerCase()}">
+                                <div><span class="badge bg-${sevColor[f.severity] || "secondary"} me-2">${Util.escape(f.code)}</span>${Util.escape(f.title)}</div>
+                                <div class="small text-muted mt-1">${Util.escape(f.detail)}</div>
+                                ${(f.evidence || []).slice(0, 3).map(e => `
+                                    <div class="small text-muted ms-3"><i class="fas fa-arrow-right me-1"></i>${Util.escape(e)}</div>
+                                `).join("")}
+                            </div>
+                        `).join("")}
+                    </div>
+                </div>
+            </div>
+        </div>`;
+
+    setTimeout(() => {
+        const ctx = document.getElementById("auditRadar");
+        if (!ctx || typeof Chart === "undefined") return;
+        State.chartInstances.audit = new Chart(ctx, {
+            type: "radar",
+            data: {
+                labels,
+                datasets: [{
+                    label: "本次得分", data, fill: true,
+                    backgroundColor: "rgba(13, 202, 240, 0.18)",
+                    borderColor: "rgba(13, 110, 253, 0.85)",
+                    pointBackgroundColor: "rgba(13, 110, 253, 1)",
+                    pointRadius: 4,
+                }],
+            },
+            options: {
+                scales: { r: { min: 0, max: 100, ticks: { stepSize: 20 } } },
+                plugins: { legend: { display: false } },
+            },
+        });
+    }, 50);
+}
+
+/* ============================================================
+ * 视图 6：编辑档案大页（characters / storyline 大表单）
+ * ============================================================ */
+async function renderEdit(root, novelId) {
+    const [n, chars, story] = await Promise.all([
+        Util.get(`/novels/${novelId}`),
+        Util.get(`/novels/${novelId}/characters`),
+        Util.get(`/novels/${novelId}/storyline`),
+    ]);
+    State.currentNovelId = novelId;
+
+    const main = chars.main_character || {};
+    const sup = chars.supporting_characters || [];
+    const ov = story.overall_storyline || {};
+    const a1 = ov.act1 || {}, a2 = ov.act2 || {}, a3 = ov.act3 || {};
+    const cf = ov.core_conflict || {};
+
+    root.innerHTML = `
+        <div class="d-flex align-items-center mb-4 flex-wrap gap-2">
+            <button class="btn btn-sm btn-outline-secondary" onclick="App.go('#/novel/${novelId}')"><i class="fas fa-arrow-left"></i></button>
+            <h3 class="mb-0">${Util.escape(n.title)} · 编辑档案</h3>
+        </div>
+
+        <ul class="nav nav-tabs mb-3" role="tablist">
+            <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-meta">基本信息</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-chars">角色档案</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-story">Storyline</button></li>
+        </ul>
+        <div class="tab-content">
+            <!-- 基本信息 -->
+            <div class="tab-pane fade show active" id="tab-meta">
+                <div class="card shadow-sm">
+                    <div class="card-body">
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <label class="form-label">小说标题</label>
+                                <input class="form-control" id="metaTitle" value="${Util.escape(n.title)}" />
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label">主角姓名</label>
+                                <input class="form-control" id="metaProtag" value="${Util.escape(n.main_character_name)}" />
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label">总章数</label>
+                                <input type="number" class="form-control" id="metaTotal" value="${n.total_chapters_planned}" min="5" max="200" />
+                            </div>
+                            <div class="col-12">
+                                <label class="form-label">附加创作要求</label>
+                                <textarea class="form-control" id="metaExtra" rows="4">${Util.escape((await Util.get(`/novels/${novelId}/metadata`)).user_requirements || "")}</textarea>
+                            </div>
+                        </div>
+                        <div class="mt-3 d-flex gap-2">
+                            <button class="btn btn-primary" onclick="App.saveMetaTab()"><i class="fas fa-save me-1"></i>保存基本信息</button>
+                            <span class="text-muted small align-self-center">注意：标题/主角名也会同步影响内部展示，但不会重写已生成内容</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 角色档案 -->
+            <div class="tab-pane fade" id="tab-chars">
+                <div id="charsForm"></div>
+            </div>
+
+            <!-- Storyline -->
+            <div class="tab-pane fade" id="tab-story">
+                <div class="card shadow-sm">
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label class="form-label">主角终极目标</label>
+                            <textarea class="form-control" id="stMainGoal" rows="2">${Util.escape(ov.main_goal || "")}</textarea>
+                        </div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-4">
+                                <label class="form-label">外在冲突</label>
+                                <textarea class="form-control" id="stExt" rows="3">${Util.escape(cf.external || "")}</textarea>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">内在冲突</label>
+                                <textarea class="form-control" id="stInt" rows="3">${Util.escape(cf.internal || "")}</textarea>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">人际冲突</label>
+                                <textarea class="form-control" id="stIntp" rows="3">${Util.escape(cf.interpersonal || "")}</textarea>
+                            </div>
+                        </div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-4">
+                                <label class="form-label">第一幕 · Setup</label>
+                                <textarea class="form-control" id="stAct1" rows="6">${Util.escape(a1.setup || "")}</textarea>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">第二幕 · 中点危机</label>
+                                <textarea class="form-control" id="stAct2" rows="6">${Util.escape(a2.midpoint_crisis || a2.confrontation || "")}</textarea>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">第三幕 · Climax</label>
+                                <textarea class="form-control" id="stAct3" rows="6">${Util.escape(a3.climax || "")}</textarea>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">主题（每行一个）</label>
+                            <textarea class="form-control" id="stThemes" rows="3">${Util.escape((ov.themes || []).join("\n"))}</textarea>
+                        </div>
+                        <div class="d-flex gap-2">
+                            <button class="btn btn-primary" onclick="App.saveStorylineTab()"><i class="fas fa-save me-1"></i>保存 Storyline</button>
+                            <span class="text-warning small align-self-center">
+                                <i class="fas fa-triangle-exclamation me-1"></i>修改后建议重新跑一次 Canon 校验
                             </span>
                         </div>
                     </div>
-                    ${status === 'completed' ? `
-                        <div class="step-actions">
-                            <i class="fas fa-chevron-down step-toggle-icon" id="toggle-icon-${step.key}"></i>
-                        </div>
-                    ` : ''}
                 </div>
-                
-                ${status === 'completed' ? `
-                    <div class="step-details" id="step-details-${step.key}" style="display: none;">
-                        <div class="step-content">
-                            <div class="loading-placeholder">
-                                <i class="fas fa-spinner fa-spin me-2"></i>
-                                正在加载详细内容...
-                            </div>
-                        </div>
-                    </div>
-                ` : ''}
-                
-                ${status === 'current' && step.key !== 'chapter_completed' ? `
-                    <div class="step-actions-current">
-                        <button class="btn btn-success btn-lg" onclick="executeContinuationStep('${step.key}')">
-                            <i class="fas fa-play me-2"></i>执行此步骤
-                        </button>
-                        
-                        <!-- 优化选项 -->
-                        ${step.key === 'storyline_generation' ? `
-                            <div class="optimization-options mt-2">
-                                <button class="btn btn-outline-warning btn-sm me-2" onclick="optimizeContinuationStorylineBasedOnQuality()">
-                                    <i class="fas fa-magic me-1"></i>智能优化故事线
-                                </button>
-                                <button class="btn btn-outline-info btn-sm" onclick="improveContinuationStep('storyline_generation')">
-                                    <i class="fas fa-edit me-1"></i>手动改进故事线
-                                </button>
-                            </div>
-                        ` : ''}
-                        
-                        ${step.key === 'chapter_writing' ? `
-                            <div class="optimization-options mt-2">
-                                <button class="btn btn-outline-info btn-sm" onclick="improveContinuationStep('chapter_writing')">
-                                    <i class="fas fa-edit me-1"></i>改进章节内容
-                                </button>
-                            </div>
-                        ` : ''}
-                    </div>
-                ` : ''}
-                
-                ${status === 'current' && step.key === 'chapter_completed' ? `
-                    <div class="step-completed-message">
-                        <div class="alert alert-success border-0">
-                            <div class="d-flex align-items-center">
-                                <i class="fas fa-check-circle fa-2x text-success me-3"></i>
-                                <div>
-                                    <h6 class="mb-1">续写章节已完成！</h6>
-                                    <p class="mb-0">章节已保存，您可以继续续写下一章或查看内容。</p>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <!-- 完成后的操作选项 -->
-                        <div class="completion-actions mt-3">
-                            <button class="btn btn-primary btn-lg me-2" onclick="startNextChapter()">
-                                <i class="fas fa-plus-circle me-2"></i>开始下一章
-                            </button>
-                            <button class="btn btn-success btn-sm me-2" onclick="showQuickContinuationDialog()">
-                                <i class="fas fa-bolt me-2"></i>快速续写
-                            </button>
-                            <button class="btn btn-info btn-sm me-2" onclick="checkQuickContinuationProgress()">
-                                <i class="fas fa-chart-line me-2"></i>查看进度
-                            </button>
-                            <button class="btn btn-outline-danger btn-sm" onclick="clearContinuationChapterCache()">
-                                <i class="fas fa-trash me-2"></i>清除缓存
-                            </button>
-                        </div>
-                    </div>
-                ` : ''}
             </div>
-        `;
-    }).join('');
-    
-    container.innerHTML = `
-        ${novelInfoHtml}
-        <div class="workflow-steps">
-            ${stepsHtml}
+        </div>`;
+
+    renderCharsForm(main, sup);
+}
+
+function renderCharsForm(main, sup) {
+    const mb = main.basic_info || {};
+    const supRows = sup.map((s, i) => charSupRow(s, i)).join("");
+    document.getElementById("charsForm").innerHTML = `
+        <div class="card shadow-sm mb-3">
+            <div class="card-header bg-warning"><i class="fas fa-crown me-2"></i>主角</div>
+            <div class="card-body">
+                <div class="row g-2">
+                    <div class="col-md-3"><label class="form-label small">姓名</label>
+                        <input class="form-control form-control-sm" data-mfield="name" value="${Util.escape(mb.name || "")}" /></div>
+                    <div class="col-md-2"><label class="form-label small">性别</label>
+                        <select class="form-select form-select-sm" data-mfield="gender">
+                            <option value="男" ${mb.gender === "男" ? "selected" : ""}>男</option>
+                            <option value="女" ${mb.gender === "女" ? "selected" : ""}>女</option>
+                            <option value="未知" ${!mb.gender || (mb.gender !== "男" && mb.gender !== "女") ? "selected" : ""}>未知</option>
+                        </select></div>
+                    <div class="col-md-2"><label class="form-label small">年龄</label>
+                        <input class="form-control form-control-sm" type="number" data-mfield="age" value="${mb.age || ""}" /></div>
+                    <div class="col-md-5"><label class="form-label small">职业</label>
+                        <input class="form-control form-control-sm" data-mfield="occupation" value="${Util.escape(mb.occupation || "")}" /></div>
+                </div>
+            </div>
         </div>
-    `;
-};
-
-// 步骤详情管理
-const StepDetailsManager = {
-    // 通用的错误处理包装器
-    withErrorHandling: async (loadFunction, contentElement, stepName, stepKey) => {
-        try {
-            await loadFunction(contentElement);
-        } catch (error) {
-            console.error(`加载${stepName}详情失败:`, error);
-            contentElement.innerHTML = `
-                <div class="step-detail-content">
-                    <div class="alert alert-warning">
-                        <i class="fas fa-exclamation-triangle me-2"></i>
-                        ${stepName}数据不存在或尚未生成。请先完成相关步骤。
-                    </div>
-                    <div class="step-actions">
-                        <button class="btn btn-warning btn-sm" onclick="regenerateStep('${stepKey}')">
-                            <i class="fas fa-redo me-2"></i>重新生成
-                        </button>
-                    </div>
-                </div>
-            `;
-        }
-    },
-
-    // 切换步骤详情显示
-    toggleStepDetails: async (stepKey) => {
-        const detailsElement = document.getElementById(`step-details-${stepKey}`);
-        const toggleIcon = document.getElementById(`toggle-icon-${stepKey}`);
-        
-        if (!detailsElement) {
-            console.error(`未找到步骤详情元素: step-details-${stepKey}`);
-            return;
-        }
-        
-        if (detailsElement.style.display === 'none') {
-            // 展开详情
-            detailsElement.style.display = 'block';
-            if (toggleIcon) {
-                toggleIcon.classList.remove('fa-chevron-down');
-                toggleIcon.classList.add('fa-chevron-up');
-            }
-            
-            // 加载详细内容
-            await StepDetailsManager.loadStepDetails(stepKey);
-        } else {
-            // 收起详情
-            detailsElement.style.display = 'none';
-            if (toggleIcon) {
-                toggleIcon.classList.remove('fa-chevron-up');
-                toggleIcon.classList.add('fa-chevron-down');
-            }
-        }
-    },
-    
-    // 加载步骤详细内容
-    loadStepDetails: async (stepKey) => {
-        if (!AppState.currentNovelId) return;
-        
-        try {
-            const contentElement = document.querySelector(`#step-details-${stepKey} .step-content`);
-            
-            // 检查是否在续写模式
-            const isContinuationMode = AppState.continuationData && AppState.continuationData.is_continuation;
-            
-            // 根据步骤类型和模式加载不同的内容
-            switch (stepKey) {
-                case 'tag_selection':
-                    await StepDetailsManager.withErrorHandling(
-                        StepDetailsManager.loadTagDetails, 
-                        contentElement, 
-                        '标签', 
-                        stepKey
-                    );
-                    break;
-                case 'character_creation':
-                    await StepDetailsManager.withErrorHandling(
-                        StepDetailsManager.loadCharacterDetails, 
-                        contentElement, 
-                        '人物', 
-                        stepKey
-                    );
-                    break;
-                case 'storyline_generation':
-                    if (isContinuationMode) {
-                        await StepDetailsManager.loadContinuationStorylineDetails(contentElement);
-                    } else {
-                    await StepDetailsManager.loadStorylineDetails(contentElement);
-                    }
-                    break;
-                case 'knowledge_graph_creation':
-                    await StepDetailsManager.loadKnowledgeGraphDetails(contentElement);
-                    break;
-                case 'chapter_writing':
-                    if (isContinuationMode) {
-                        await StepDetailsManager.loadContinuationChapterDetails(contentElement);
-                    } else {
-                    await StepDetailsManager.loadChapterDetails(contentElement);
-                    }
-                    break;
-                // 续写专用步骤
-                case 'storyline_improvement':
-                    if (isContinuationMode) {
-                        await StepDetailsManager.loadContinuationStorylineImprovementDetails(contentElement);
-                    }
-                    break;
-                case 'quality_assessment':
-                    if (isContinuationMode) {
-                        await StepDetailsManager.loadContinuationQualityAssessmentDetails(contentElement);
-                    }
-                    break;
-                case 'chapter_quality_assessment':
-                    if (isContinuationMode) {
-                        await StepDetailsManager.loadContinuationChapterQualityDetails(contentElement);
-                    }
-                    break;
-                case 'content_improvement':
-                    if (isContinuationMode) {
-                        await StepDetailsManager.loadContinuationContentImprovementDetails(contentElement);
-                    }
-                    break;
-                case 'chapter_save':
-                    if (isContinuationMode) {
-                        await StepDetailsManager.loadContinuationChapterSaveDetails(contentElement);
-                    }
-                    break;
-                case 'chapter_completed':
-                    if (isContinuationMode) {
-                        await StepDetailsManager.loadContinuationChapterCompletedDetails(contentElement);
-                    }
-                    break;
-            }
-        } catch (error) {
-            console.error('加载步骤详情失败:', error);
-            const contentElement = document.querySelector(`#step-details-${stepKey} .step-content`);
-            contentElement.innerHTML = `
-                <div class="alert alert-danger">
-                    <i class="fas fa-exclamation-triangle me-2"></i>
-                    加载详细内容失败: ${error.message}
-                </div>
-            `;
-        }
-    },
-    
-    // 加载续写完成详情
-    loadContinuationChapterCompletedDetails: async (contentElement) => {
-        try {
-            // 获取最新的章节数据
-            const chaptersResponse = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/chapters`);
-            if (!chaptersResponse.success || chaptersResponse.data.length === 0) {
-                contentElement.innerHTML = `
-                    <div class="alert alert-warning">
-                        <i class="fas fa-exclamation-triangle me-2"></i>
-                        未找到续写章节数据
-                    </div>
-                `;
-                return;
-            }
-            
-            const latestChapter = chaptersResponse.data[chaptersResponse.data.length - 1];
-            
-            // 获取质量评估数据
-            let qualityAssessment = null;
-            try {
-                const qualityResponse = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/data/continuation_chapter_quality_assessment`);
-                if (qualityResponse.success) {
-                    qualityAssessment = qualityResponse.data;
-                }
-            } catch (error) {
-                console.log('未找到续写章节质量评估数据');
-            }
-            
-            contentElement.innerHTML = `
-                <div class="step-detail-content">
-                    <h6><i class="fas fa-flag-checkered me-2"></i>续写完成</h6>
-                    
-                    <div class="completion-summary mb-4">
-                        <div class="alert alert-success">
-                            <i class="fas fa-check-circle me-2"></i>
-                            <strong>续写章节已完成！</strong>
-                            <p class="mb-0 mt-2">第${latestChapter.chapter_number}章已成功生成并保存。</p>
-                        </div>
-                    </div>
-                    
-                    <div class="chapter-summary mb-4">
-                        <h6><i class="fas fa-book me-2"></i>章节信息</h6>
-                        <div class="row">
-                            <div class="col-md-6">
-                                <p><strong>标题：</strong>${latestChapter.title}</p>
-                                <p><strong>字数：</strong>${latestChapter.word_count || 0}</p>
-                                <p><strong>创建时间：</strong>${Utils.formatDate(latestChapter.created_at)}</p>
-                            </div>
-                            <div class="col-md-6">
-                                <p><strong>章节概要：</strong></p>
-                                <p class="text-muted">${latestChapter.summary || '暂无概要'}</p>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    ${Utils.generateQualityAssessmentHTML(qualityAssessment)}
-                    
-                    <div class="chapter-actions mb-3">
-                        <button class="btn btn-outline-primary btn-sm" onclick="showContinuationChapterModal('${AppState.currentNovelId}')">
-                            <i class="fas fa-eye me-1"></i>查看完整内容
-                        </button>
-                        <button class="btn btn-outline-info btn-sm" onclick="assessContinuationQuality('story')">
-                            <i class="fas fa-star me-1"></i>质量评估
-                        </button>
-                        <button class="btn btn-outline-success btn-sm" onclick="regenerateContinuationStep('chapter_writing')">
-                            <i class="fas fa-redo me-1"></i>重新生成章节
-                        </button>
-                    </div>
-                    
-                    <div class="next-steps">
-                        <h6><i class="fas fa-arrow-right me-2"></i>下一步操作</h6>
-                        <div class="list-group">
-                            <div class="list-group-item">
-                                <i class="fas fa-plus-circle me-2 text-success"></i>
-                                <strong>继续续写</strong> - 生成下一章内容
-                            </div>
-                            <div class="list-group-item">
-                                <i class="fas fa-edit me-2 text-primary"></i>
-                                <strong>编辑修改</strong> - 对当前章节进行修改
-                            </div>
-                            <div class="list-group-item">
-                                <i class="fas fa-download me-2 text-info"></i>
-                                <strong>导出小说</strong> - 下载完整小说文件
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `;
-        } catch (error) {
-            console.error('加载续写完成详情失败:', error);
-            contentElement.innerHTML = `
-                <div class="alert alert-danger">
-                    <i class="fas fa-exclamation-triangle me-2"></i>
-                    加载续写完成详情失败: ${error.message}
-                </div>
-            `;
-        }
-    },
-    
-    // 加载标签详情
-    loadTagDetails: async (contentElement) => {
-        try {
-            const response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/data/tags`);
-            
-            if (response.success) {
-                const tags = response.data;
-                
-                // 获取所有可用的标签分类
-                const tagCategoriesResponse = await Utils.apiRequest('/config/tags');
-                const availableCategories = tagCategoriesResponse.success ? tagCategoriesResponse.data : {};
-                
-                contentElement.innerHTML = `
-                    <div class="step-detail-content">
-                        <div class="d-flex justify-content-between align-items-center mb-3">
-                            <h6><i class="fas fa-tags me-2"></i>已选择的标签</h6>
-                            <div class="step-controls">
-                                <button class="btn btn-outline-primary btn-sm" onclick="toggleTagEditMode()">
-                                    <i class="fas fa-edit me-1"></i>编辑标签
-                                </button>
-                                <button class="btn btn-outline-success btn-sm" onclick="showAddTagModal()">
-                                    <i class="fas fa-plus me-1"></i>添加标签
-                                </button>
-                            </div>
-                        </div>
-                        
-                        <div class="tags-display" id="tags-display">
-                            ${Object.entries(tags.selected_tags || {}).map(([category, tagList]) => `
-                                <div class="tag-category" data-category="${category}">
-                                    <strong>${category}:</strong>
-                                    <div class="tag-list">
-                                        ${tagList.map(tag => `
-                                            <span class="tag" data-category="${category}" data-tag="${tag}">
-                                                ${tag}
-                                                <i class="fas fa-times tag-remove" onclick="removeTag('${category}', '${tag}')" style="display: none;"></i>
-                                            </span>
-                                        `).join('')}
-                                    </div>
-                                </div>
-                            `).join('')}
-                        </div>
-                        
-                        <div class="step-actions mt-3">
-                            <button class="btn btn-warning btn-sm" onclick="regenerateStep('tag_selection')">
-                                <i class="fas fa-redo me-2"></i>重新生成标签
-                            </button>
-                            <button class="btn btn-success btn-sm" onclick="saveTagChanges()" style="display: none;" id="save-tags-btn">
-                                <i class="fas fa-save me-2"></i>保存标签修改
-                            </button>
-                        </div>
-                    </div>
-                `;
-            } else {
-                // 显示错误信息
-                contentElement.innerHTML = `
-                    <div class="step-detail-content">
-                        <div class="alert alert-warning">
-                            <i class="fas fa-exclamation-triangle me-2"></i>
-                            标签数据不存在或尚未生成。请重新生成标签。
-                        </div>
-                        <div class="step-actions">
-                            <button class="btn btn-warning btn-sm" onclick="regenerateStep('tag_selection')">
-                                <i class="fas fa-redo me-2"></i>重新生成标签
-                            </button>
-                        </div>
-                    </div>
-                `;
-            }
-        } catch (error) {
-            console.error('加载标签详情失败:', error);
-            contentElement.innerHTML = `
-                <div class="step-detail-content">
-                    <div class="alert alert-danger">
-                        <i class="fas fa-exclamation-circle me-2"></i>
-                        加载详细内容失败: ${error.message}
-                    </div>
-                    <div class="step-actions">
-                        <button class="btn btn-warning btn-sm" onclick="regenerateStep('tag_selection')">
-                            <i class="fas fa-redo me-2"></i>重新生成标签
-                        </button>
-                    </div>
-                </div>
-            `;
-        }
-    },
-    
-    // 加载人物详情
-    loadCharacterDetails: async (contentElement) => {
-        const response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/data/characters`);
-        
-        if (response.success) {
-            const characters = response.data;
-            
-            // 加载质量评估
-            let qualityAssessment = null;
-            try {
-                const qualityResponse = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/data/character_quality_assessment`);
-                if (qualityResponse.success) {
-                    qualityAssessment = qualityResponse.data;
-                }
-            } catch (error) {
-                console.log('未找到质量评估数据');
-            }
-            
-            contentElement.innerHTML = `
-                <div class="step-detail-content">
-                    <div class="d-flex justify-content-between align-items-center mb-3">
-                        <h6><i class="fas fa-users me-2"></i>人物设定</h6>
-                        <div class="step-controls">
-                            <button class="btn btn-outline-primary btn-sm" onclick="toggleEditMode('character_creation')">
-                                <i class="fas fa-edit me-1"></i>编辑
-                            </button>
-                            <button class="btn btn-outline-info btn-sm" onclick="assessQuality('character_creation')">
-                                <i class="fas fa-star me-1"></i>质量评估
-                            </button>
-                        </div>
-                    </div>
-                    
-                    ${Utils.generateQualityAssessmentHTML(qualityAssessment, false)}
-                    
-                    <div class="character-details" id="character-content">
-                        <div class="main-character mb-4">
-                            <h6 class="text-primary">主角</h6>
-                            <div class="character-card">
-                                <!-- 基本信息 -->
-                                <div class="character-section">
-                                    <h6 class="section-title">基本信息</h6>
-                                <div class="character-basic">
-                                    <strong>姓名:</strong> <span class="editable" data-field="main_character.basic_info.name">${characters.main_character?.basic_info?.name || '未知'}</span><br>
-                                    <strong>年龄:</strong> <span class="editable" data-field="main_character.basic_info.age">${characters.main_character?.basic_info?.age || '未知'}</span><br>
-                                        <strong>性别:</strong> <span class="editable" data-field="main_character.basic_info.gender">${characters.main_character?.basic_info?.gender || '未知'}</span><br>
-                                    <strong>职业:</strong> <span class="editable" data-field="main_character.basic_info.occupation">${characters.main_character?.basic_info?.occupation || '未知'}</span>
-                                </div>
-                                </div>
-                                
-                                <!-- 性格特征 -->
-                                <div class="character-section">
-                                    <h6 class="section-title">性格特征</h6>
-                                    <div class="personality-grid">
-                                        <div class="personality-item">
-                                            <strong>外向性:</strong> <span class="editable" data-field="main_character.personality.extraversion">${characters.main_character?.personality?.extraversion || '未知'}</span>
-                                        </div>
-                                        <div class="personality-item">
-                                            <strong>宜人性:</strong> <span class="editable" data-field="main_character.personality.agreeableness">${characters.main_character?.personality?.agreeableness || '未知'}</span>
-                                        </div>
-                                        <div class="personality-item">
-                                            <strong>尽责性:</strong> <span class="editable" data-field="main_character.personality.conscientiousness">${characters.main_character?.personality?.conscientiousness || '未知'}</span>
-                                        </div>
-                                        <div class="personality-item">
-                                            <strong>神经质:</strong> <span class="editable" data-field="main_character.personality.neuroticism">${characters.main_character?.personality?.neuroticism || '未知'}</span>
-                                        </div>
-                                        <div class="personality-item">
-                                            <strong>开放性:</strong> <span class="editable" data-field="main_character.personality.openness">${characters.main_character?.personality?.openness || '未知'}</span>
-                                        </div>
-                                </div>
-                                <div class="character-description mt-2">
-                                        <strong>性格描述:</strong> 
-                                        <span class="editable" data-field="main_character.personality.description">${characters.main_character?.personality?.description || '未知'}</span>
-                                    </div>
-                                </div>
-                                
-                                <!-- 外貌特征 -->
-                                <div class="character-section">
-                                    <h6 class="section-title">外貌特征</h6>
-                                    <div class="character-basic">
-                                        <strong>身高:</strong> <span class="editable" data-field="main_character.appearance.height">${characters.main_character?.appearance?.height || '未知'}</span><br>
-                                        <strong>体型:</strong> <span class="editable" data-field="main_character.appearance.build">${characters.main_character?.appearance?.build || '未知'}</span><br>
-                                        <strong>着装风格:</strong> <span class="editable" data-field="main_character.appearance.clothing_style">${characters.main_character?.appearance?.clothing_style || '未知'}</span><br>
-                                        <strong>标志性特征:</strong> 
-                                        <span class="editable" data-field="main_character.appearance.distinctive_features" title="编辑提示：多个特征用逗号分隔">${Array.isArray(characters.main_character?.appearance?.distinctive_features) ? characters.main_character.appearance.distinctive_features.join(', ') : (characters.main_character?.appearance?.distinctive_features || '未知')}</span>
-                                    </div>
-                                </div>
-                                
-                                <!-- 背景故事 -->
-                                <div class="character-section">
-                                    <h6 class="section-title">背景故事</h6>
-                                    <div class="character-description">
-                                        <strong>核心欲望:</strong> <span class="editable" data-field="main_character.background.core_desire">${characters.main_character?.background?.core_desire || '未知'}</span><br>
-                                        <strong>主要恐惧:</strong> <span class="editable" data-field="main_character.background.fear">${characters.main_character?.background?.fear || '未知'}</span><br>
-                                        <strong>过往经历:</strong> <span class="editable" data-field="main_character.background.past_experience">${characters.main_character?.background?.past_experience || '未知'}</span><br>
-                                        <strong>行为动机:</strong> <span class="editable" data-field="main_character.background.motivation">${characters.main_character?.background?.motivation || '未知'}</span><br>
-                                        <strong>价值观:</strong> <span class="editable" data-field="main_character.background.values">${Array.isArray(characters.main_character?.background?.values) ? characters.main_character.background.values.join(', ') : (characters.main_character?.background?.values || '未知')}</span><br>
-                                        <strong>创伤经历:</strong> <span class="editable" data-field="main_character.background.trauma">${characters.main_character?.background?.trauma || '未知'}</span><br>
-                                        <strong>主要成就:</strong> <span class="editable" data-field="main_character.background.achievements">${Array.isArray(characters.main_character?.background?.achievements) ? characters.main_character.background.achievements.join('; ') : (characters.main_character?.background?.achievements || '未知')}</span>
-                                    </div>
-                                </div>
-                                
-                                <!-- 技能特长 -->
-                                <div class="character-section">
-                                    <h6 class="section-title">技能特长</h6>
-                                    <div class="character-description">
-                                        <strong>核心技能:</strong> <span class="editable" data-field="main_character.skills.core_skills" title="编辑提示：多个技能用逗号分隔">${Array.isArray(characters.main_character?.skills?.core_skills) ? characters.main_character.skills.core_skills.join(', ') : (characters.main_character?.skills?.core_skills || '未知')}</span><br>
-                                        <strong>辅助技能:</strong> <span class="editable" data-field="main_character.skills.auxiliary_skills" title="编辑提示：多个技能用逗号分隔">${Array.isArray(characters.main_character?.skills?.auxiliary_skills) ? characters.main_character.skills.auxiliary_skills.join(', ') : (characters.main_character?.skills?.auxiliary_skills || '未知')}</span><br>
-                                        <strong>隐藏技能:</strong> <span class="editable" data-field="main_character.skills.hidden_skills" title="编辑提示：多个技能用逗号分隔">${Array.isArray(characters.main_character?.skills?.hidden_skills) ? characters.main_character.skills.hidden_skills.join(', ') : (characters.main_character?.skills?.hidden_skills || '未知')}</span><br>
-                                        <strong>技能等级:</strong><br>
-                                        ${(() => {
-                                            const skillLevels = characters.main_character?.skills?.skill_levels || {};
-                                            if (typeof skillLevels === 'object' && Object.keys(skillLevels).length > 0) {
-                                                return Object.entries(skillLevels).map(([skill, level]) => 
-                                                    `&nbsp;&nbsp;• <span class="editable" data-field="main_character.skills.skill_levels.${skill}" title="技能名称">${skill}</span>: <span class="editable" data-field="main_character.skills.skill_levels.${skill}_level" title="技能等级">${level}</span><br>`
-                                                ).join('');
-                                            } else {
-                                                return '&nbsp;&nbsp;• <span class="editable" data-field="main_character.skills.skill_levels" title="编辑提示：格式如 技能1:等级1, 技能2:等级2">未知</span><br>';
-                                            }
-                                        })()}
-                                    </div>
-                                </div>
-                                
-                                <!-- 人际关系 -->
-                                <div class="character-section">
-                                    <h6 class="section-title">人际关系</h6>
-                                    <div class="character-description">
-                                        <strong>家庭关系:</strong><br>
-                                        &nbsp;&nbsp;• 父母: <span class="editable" data-field="main_character.relationships.family.parents">${characters.main_character?.relationships?.family?.parents || '未知'}</span><br>
-                                        &nbsp;&nbsp;• 兄弟姐妹: <span class="editable" data-field="main_character.relationships.family.siblings">${characters.main_character?.relationships?.family?.siblings || '未知'}</span><br>
-                                        &nbsp;&nbsp;• 其他亲属: <span class="editable" data-field="main_character.relationships.family.extended_family">${characters.main_character?.relationships?.family?.extended_family || '未知'}</span><br>
-                                        
-                                        <strong>朋友关系:</strong><br>
-                                        &nbsp;&nbsp;• 密友: <span class="editable" data-field="main_character.relationships.friends.close_friends" title="编辑提示：多个朋友用逗号分隔">${Array.isArray(characters.main_character?.relationships?.friends?.close_friends) ? characters.main_character.relationships.friends.close_friends.join(', ') : (characters.main_character?.relationships?.friends?.close_friends || '未知')}</span><br>
-                                        &nbsp;&nbsp;• 熟人: <span class="editable" data-field="main_character.relationships.friends.acquaintances" title="编辑提示：多个熟人用逗号分隔">${Array.isArray(characters.main_character?.relationships?.friends?.acquaintances) ? characters.main_character.relationships.friends.acquaintances.join(', ') : (characters.main_character?.relationships?.friends?.acquaintances || '未知')}</span><br>
-                                        
-                                        <strong>敌对关系:</strong><br>
-                                        &nbsp;&nbsp;• 竞争对手: <span class="editable" data-field="main_character.relationships.enemies.rivals" title="编辑提示：多个对手用逗号分隔">${Array.isArray(characters.main_character?.relationships?.enemies?.rivals) ? characters.main_character.relationships.enemies.rivals.join(', ') : (characters.main_character?.relationships?.enemies?.rivals || '未知')}</span><br>
-                                        &nbsp;&nbsp;• 敌对者: <span class="editable" data-field="main_character.relationships.enemies.antagonists" title="编辑提示：多个敌对者用逗号分隔">${Array.isArray(characters.main_character?.relationships?.enemies?.antagonists) ? characters.main_character.relationships.enemies.antagonists.join(', ') : (characters.main_character?.relationships?.enemies?.antagonists || '未知')}</span><br>
-                                        
-                                        <strong>感情状况:</strong> <span class="editable" data-field="main_character.relationships.romantic">${characters.main_character?.relationships?.romantic || '未知'}</span><br>
-                                    </div>
-                                </div>
-                                
-                                <!-- 角色弧线 -->
-                                <div class="character-section">
-                                    <h6 class="section-title">角色弧线</h6>
-                                    <div class="character-description">
-                                        <strong>起始点:</strong> <span class="editable" data-field="main_character.character_arc.starting_point">${characters.main_character?.character_arc?.starting_point || '未知'}</span><br>
-                                        <strong>成长方向:</strong> <span class="editable" data-field="main_character.character_arc.growth_direction">${characters.main_character?.character_arc?.growth_direction || '未知'}</span><br>
-                                        <strong>潜在冲突:</strong> <span class="editable" data-field="main_character.character_arc.potential_conflicts">${Array.isArray(characters.main_character?.character_arc?.potential_conflicts) ? characters.main_character.character_arc.potential_conflicts.join('; ') : (characters.main_character?.character_arc?.potential_conflicts || '未知')}</span><br>
-                                        <strong>转变机会:</strong> <span class="editable" data-field="main_character.character_arc.transformation_opportunities">${Array.isArray(characters.main_character?.character_arc?.transformation_opportunities) ? characters.main_character.character_arc.transformation_opportunities.join('; ') : (characters.main_character?.character_arc?.transformation_opportunities || '未知')}</span>
-                                    </div>
-                                </div>
-                                
-                                <!-- 故事功能 -->
-                                <div class="character-section">
-                                    <h6 class="section-title">故事功能</h6>
-                                    <div class="character-description">
-                                        <strong>情节作用:</strong> <span class="editable" data-field="main_character.story_function.role_in_plot">${characters.main_character?.story_function?.role_in_plot || '未知'}</span><br>
-                                        <strong>冲突生成:</strong> <span class="editable" data-field="main_character.story_function.conflict_generator">${characters.main_character?.story_function?.conflict_generator || '未知'}</span><br>
-                                        <strong>主题代表:</strong> <span class="editable" data-field="main_character.story_function.theme_representative">${characters.main_character?.story_function?.theme_representative || '未知'}</span><br>
-                                        <strong>读者连接:</strong> <span class="editable" data-field="main_character.story_function.reader_connection">${characters.main_character?.story_function?.reader_connection || '未知'}</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <div class="supporting-characters">
-                            <h6 class="text-secondary">配角</h6>
-                            ${(() => {
-                                const supportingChars = characters.supporting_characters || {};
-                                // 处理对象格式的配角数据
-                                const charArray = Array.isArray(supportingChars) ? supportingChars : Object.values(supportingChars);
-                                return charArray.map((char, index) => `
-                                    <div class="character-card mb-3">
-                                        <!-- 基本信息 -->
-                                        <div class="character-section">
-                                            <h6 class="section-title">${char.basic_info?.name || '未知角色'}</h6>
-                                        <div class="character-basic">
-                                                <strong>姓名:</strong> <span class="editable" data-field="supporting_characters.${index}.basic_info.name">${char.basic_info?.name || '未知'}</span><br>
-                                                <strong>年龄:</strong> <span class="editable" data-field="supporting_characters.${index}.basic_info.age">${char.basic_info?.age || '未知'}</span><br>
-                                                <strong>性别:</strong> <span class="editable" data-field="supporting_characters.${index}.basic_info.gender">${char.basic_info?.gender || '未知'}</span><br>
-                                                <strong>职业:</strong> <span class="editable" data-field="supporting_characters.${index}.basic_info.occupation">${char.basic_info?.occupation || '未知'}</span><br>
-                                                <strong>角色定位:</strong> <span class="editable" data-field="supporting_characters.${index}.role">${char.role || '未知'}</span>
-                                            </div>
-                                        </div>
-                                        
-                                        <!-- 性格特征 -->
-                                        <div class="character-section">
-                                            <h6 class="section-title">性格特征</h6>
-                                            <div class="character-description">
-                                                <span class="editable" data-field="supporting_characters.${index}.personality">${char.personality || '未知'}</span>
-                                            </div>
-                                        </div>
-                                        
-                                        <!-- 外貌特征 -->
-                                        <div class="character-section">
-                                            <h6 class="section-title">外貌特征</h6>
-                                            <div class="character-description">
-                                                <span class="editable" data-field="supporting_characters.${index}.appearance">${char.appearance || '未知'}</span>
-                                            </div>
-                                        </div>
-                                        
-                                        <!-- 背景故事 -->
-                                        <div class="character-section">
-                                            <h6 class="section-title">背景故事</h6>
-                                            <div class="character-description">
-                                                <span class="editable" data-field="supporting_characters.${index}.background">${char.background || '未知'}</span>
-                                            </div>
-                                        </div>
-                                        
-                                        <!-- 与主角关系 -->
-                                        <div class="character-section">
-                                            <h6 class="section-title">与主角关系</h6>
-                                            <div class="character-description">
-                                                <span class="editable" data-field="supporting_characters.${index}.relationship_with_main">${char.relationship_with_main || '未知'}</span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                `).join('');
-                            })()}
-                        </div>
-                    </div>
-                    
-                    <div class="step-actions mt-3">
-                        <button class="btn btn-warning btn-sm" onclick="regenerateStep('character_creation')">
-                            <i class="fas fa-redo me-2"></i>重新生成人物
-                        </button>
-                        <button class="btn btn-info btn-sm" onclick="improveStep('character_creation')">
-                            <i class="fas fa-magic me-2"></i>改进人物
-                        </button>
-                        <button class="btn btn-primary btn-sm" onclick="optimizeCharactersBasedOnQuality()">
-                            <i class="fas fa-star me-2"></i>基于质量评估优化
-                        </button>
-                        <button class="btn btn-success btn-sm" onclick="saveStepContent('character_creation')" style="display: none;" id="save-character-creation-btn">
-                            <i class="fas fa-save me-2"></i>保存修改
-                        </button>
-                    </div>
-                </div>
-            `;
-        }
-    },
-    
-    // 加载故事线详情
-    loadStorylineDetails: async (contentElement) => {
-        const response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/data/storyline`);
-        
-        if (response.success) {
-            const storyline = response.data;
-            
-            // 加载质量评估
-            let qualityAssessment = null;
-            try {
-                const qualityResponse = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/data/storyline_quality_assessment`);
-                if (qualityResponse.success) {
-                    qualityAssessment = qualityResponse.data;
-                }
-            } catch (error) {
-                console.log('未找到质量评估数据');
-            }
-            
-            contentElement.innerHTML = `
-                <div class="step-detail-content">
-                    <div class="d-flex justify-content-between align-items-center mb-3">
-                        <h6><i class="fas fa-route me-2"></i>故事线设定</h6>
-                        <div class="step-controls">
-                            <button class="btn btn-outline-primary btn-sm" onclick="toggleEditMode('storyline_generation')">
-                                <i class="fas fa-edit me-1"></i>编辑
-                            </button>
-                            <button class="btn btn-outline-info btn-sm" onclick="assessQuality('storyline_generation')">
-                                <i class="fas fa-star me-1"></i>质量评估
-                            </button>
-                            <button class="btn btn-outline-success btn-sm" onclick="optimizeStorylineBasedOnQuality()">
-                                <i class="fas fa-magic me-1"></i>基于质量评估优化
-                            </button>
-                        </div>
-                    </div>
-                    
-                    ${Utils.generateQualityAssessmentHTML(qualityAssessment, false)}
-                    
-                    <div class="storyline-details" id="storyline-content">
-                        <div class="storyline-section mb-3">
-                            <h6 class="text-primary">主要目标</h6>
-                            <p><span class="editable" data-field="overall_storyline.main_goal">${storyline.overall_storyline?.main_goal || '未知'}</span></p>
-                        </div>
-                        
-                        <div class="storyline-section mb-3">
-                            <h6 class="text-primary">主要冲突</h6>
-                            <div class="conflict-details">
-                                <div class="mb-2">
-                                    <strong>外部冲突:</strong> <span class="editable" data-field="overall_storyline.core_conflict.external">${storyline.overall_storyline?.core_conflict?.external || '未知'}</span>
-                                </div>
-                                <div class="mb-2">
-                                    <strong>内部冲突:</strong> <span class="editable" data-field="overall_storyline.core_conflict.internal">${storyline.overall_storyline?.core_conflict?.internal || '未知'}</span>
-                                </div>
-                                <div class="mb-2">
-                                    <strong>人际冲突:</strong> <span class="editable" data-field="overall_storyline.core_conflict.interpersonal">${storyline.overall_storyline?.core_conflict?.interpersonal || '未知'}</span>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <div class="storyline-section mb-3">
-                            <h6 class="text-primary">世界观设定</h6>
-                            <div class="world-setting-details">
-                                <div class="mb-2">
-                                    <strong>时代背景:</strong> <span class="editable" data-field="overall_storyline.world_setting.time_period">${storyline.overall_storyline?.world_setting?.time_period || '未知'}</span>
-                                </div>
-                                <div class="mb-2">
-                                    <strong>地点设定:</strong> <span class="editable" data-field="overall_storyline.world_setting.location">${storyline.overall_storyline?.world_setting?.location || '未知'}</span>
-                                </div>
-                                <div class="mb-2">
-                                    <strong>社会背景:</strong> <span class="editable" data-field="overall_storyline.world_setting.society">${storyline.overall_storyline?.world_setting?.society || '未知'}</span>
-                                </div>
-                                <div class="mb-2">
-                                    <strong>氛围基调:</strong> <span class="editable" data-field="overall_storyline.world_setting.atmosphere">${storyline.overall_storyline?.world_setting?.atmosphere || '未知'}</span>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <div class="storyline-section mb-3">
-                            <h6 class="text-primary">故事主题</h6>
-                            <p><span class="editable" data-field="overall_storyline.themes" title="编辑提示：多个主题用逗号分隔，如：成长,爱情,冒险">${Array.isArray(storyline.overall_storyline?.themes) ? storyline.overall_storyline.themes.join(', ') : (storyline.overall_storyline?.themes || '未知')}</span></p>
-                        </div>
-                        
-                        <div class="storyline-section mb-3">
-                            <h6 class="text-primary">故事基调</h6>
-                            <p><span class="editable" data-field="overall_storyline.tone">${storyline.overall_storyline?.tone || '未知'}</span></p>
-                        </div>
-                        
-                        <div class="storyline-section mb-3">
-                            <h6 class="text-primary">目标受众</h6>
-                            <p><span class="editable" data-field="overall_storyline.target_audience">${storyline.overall_storyline?.target_audience || '未知'}</span></p>
-                        </div>
-                        
-                        <div class="storyline-section mb-3">
-                            <h6 class="text-primary">商业潜力</h6>
-                            <p><span class="editable" data-field="overall_storyline.commercial_potential">${storyline.overall_storyline?.commercial_potential || '未知'}</span></p>
-                        </div>
-                    </div>
-                    
-                    <div class="step-actions mt-3">
-                        <button class="btn btn-warning btn-sm" onclick="regenerateStep('storyline_generation')">
-                            <i class="fas fa-redo me-2"></i>重新生成故事线
-                        </button>
-                        <button class="btn btn-info btn-sm" onclick="improveStep('storyline_generation')">
-                            <i class="fas fa-magic me-2"></i>改进故事线
-                        </button>
-                        <button class="btn btn-success btn-sm" onclick="saveStepContent('storyline_generation')" style="display: none;" id="save-storyline-generation-btn">
-                            <i class="fas fa-save me-2"></i>保存修改
-                        </button>
-                    </div>
-                </div>
-            `;
-        }
-    },
-    
-    // 加载知识图谱详情
-    loadKnowledgeGraphDetails: async (contentElement) => {
-        const response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/data/knowledge_graph`);
-        
-        if (response.success) {
-            const kg = response.data;
-            contentElement.innerHTML = `
-                <div class="step-detail-content">
-                    <h6><i class="fas fa-project-diagram me-2"></i>知识图谱</h6>
-                    
-                    <div class="knowledge-graph-details">
-                        <div class="kg-section mb-3">
-                            <h6 class="text-primary">实体 (${kg.entities?.length || 0}个)</h6>
-                            <div class="entities-list">
-                                ${(kg.entities || []).map(entity => `
-                                    <div class="entity-item">
-                                        <strong>${entity.id}</strong> (${entity.type})
-                                        ${entity.attributes ? `
-                                            <div class="entity-attributes">
-                                                ${Object.entries(entity.attributes).map(([key, value]) => 
-                                                    `<small>${key}: ${value}</small>`
-                                                ).join(' | ')}
-                                            </div>
-                                        ` : ''}
-                                    </div>
-                                `).join('')}
-                            </div>
-                        </div>
-                        
-                        <div class="kg-section mb-3">
-                            <h6 class="text-primary">关系 (${kg.relations?.length || 0}个)</h6>
-                            <div class="relations-list">
-                                ${(kg.relations || []).map(relation => `
-                                    <div class="relation-item">
-                                        <strong>${relation.source}</strong> 
-                                        <span class="relation-type">${relation.relation_type}</span> 
-                                        <strong>${relation.target}</strong>
-                                    </div>
-                                `).join('')}
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="step-actions mt-3">
-                        <button class="btn btn-warning btn-sm" onclick="regenerateStep('knowledge_graph_creation')">
-                            <i class="fas fa-redo me-2"></i>重新生成知识图谱
-                        </button>
-                    </div>
-                </div>
-            `;
-        }
-    },
-    
-    // 加载章节详情
-    loadChapterDetails: async (contentElement) => {
-        const response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/chapters`);
-        
-        if (response.success) {
-            const chapters = response.data;
-            const firstChapter = chapters[0];
-            
-            if (firstChapter) {
-                contentElement.innerHTML = `
-                    <div class="step-detail-content">
-                        <h6><i class="fas fa-pen-fancy me-2"></i>第一章内容</h6>
-                        
-                        <div class="chapter-details">
-                            <div class="chapter-header mb-3">
-                                <h5 class="chapter-title">${firstChapter.title || '第一章'}</h5>
-                                <div class="chapter-meta">
-                                    <span class="badge bg-primary">字数: ${firstChapter.content?.length || 0}</span>
-                                </div>
-                            </div>
-                            
-                            <div class="chapter-content">
-                                <div class="chapter-text" style="max-height: 300px; overflow-y: auto; border: 1px solid #e9ecef; padding: 15px; border-radius: 5px; background-color: #f8f9fa;">
-                                    ${Utils.formatChapterContent((firstChapter.content || '').substring(0, 1500))}${(firstChapter.content || '').length > 1500 ? '...' : ''}
-                                </div>
-                            </div>
-                            
-                            <div class="chapter-actions mt-3">
-                                <button class="btn btn-primary btn-sm" onclick="viewFullChapter('${firstChapter.chapter_number}')">
-                                    <i class="fas fa-eye me-2"></i>查看完整章节
-                                </button>
-                                <button class="btn btn-warning btn-sm" onclick="regenerateStep('chapter_writing')">
-                                    <i class="fas fa-redo me-2"></i>重新生成章节
-                                </button>
-                                <button class="btn btn-success btn-sm" onclick="downloadChapter('${firstChapter.chapter_number}')">
-                                    <i class="fas fa-download me-2"></i>下载章节
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                `;
-            }
-        }
-    },
-    
-    // 续写相关详情加载函数
-    loadContinuationStorylineDetails: async (contentElement) => {
-        try {
-            const response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/continuation-status`);
-            if (response.success && response.data.continuation_state) {
-                const storyline = response.data.continuation_state.next_chapter_storyline;
-                if (storyline) {
-                    // 获取质量评估数据
-                    let qualityAssessment = null;
-                    try {
-                        const qualityResponse = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/data/continuation_storyline_quality_assessment`);
-                        if (qualityResponse.success) {
-                            qualityAssessment = qualityResponse.data;
-                        }
-                    } catch (error) {
-                        console.log('未找到续写故事线质量评估数据');
-                    }
-                    contentElement.innerHTML = `
-                        <div class="step-detail-content">
-                            <div class="d-flex justify-content-between align-items-center mb-3">
-                                <h6><i class="fas fa-route me-2"></i>续写故事线详情</h6>
-                                <div class="step-controls">
-                                    <button class="btn btn-outline-primary btn-sm" onclick="toggleContinuationEditMode('continuation_storyline')">
-                                        <i class="fas fa-edit me-1"></i>编辑
-                                    </button>
-                                    <button class="btn btn-outline-info btn-sm" onclick="assessContinuationQuality('storyline')">
-                                        <i class="fas fa-star me-1"></i>质量评估
-                                    </button>
-                                    <button class="btn btn-outline-success btn-sm" onclick="optimizeContinuationStorylineBasedOnQuality()">
-                                        <i class="fas fa-magic me-1"></i>基于质量评估优化
-                                    </button>
-                                </div>
-                            </div>
-                            
-                            <div class="storyline-details">
-                                <div class="storyline-actions mb-3" style="display: none;">
-                                    <button class="btn btn-outline-info btn-sm" onclick="assessContinuationQuality('storyline')">
-                                        <i class="fas fa-star me-1"></i>质量评估
-                                    </button>
-                                    <button class="btn btn-outline-success btn-sm" onclick="optimizeContinuationStorylineBasedOnQuality()">
-                                        <i class="fas fa-magic me-1"></i>基于质量评估优化
-                                    </button>
-                                </div>
-                                
-                                ${Utils.generateQualityAssessmentHTML(qualityAssessment, false)}
-                                
-                                <div class="storyline-section mb-3">
-                                    <h6 class="text-primary">章节信息</h6>
-                                    <p><strong>章节号：</strong><span class="editable" data-field="chapter_number">${storyline.chapter_number || '未知'}</span></p>
-                                    <p><strong>章节标题：</strong><span class="editable" data-field="chapter_title">${storyline.chapter_title || '未知'}</span></p>
-                                </div>
-                                
-                                <div class="storyline-section mb-3">
-                                    <h6 class="text-primary">场景设定</h6>
-                                    <p><strong>时间：</strong><span class="editable" data-field="scene_setting.time">${storyline.scene_setting?.time || '未知'}</span></p>
-                                    <p><strong>地点：</strong><span class="editable" data-field="scene_setting.location">${storyline.scene_setting?.location || '未知'}</span></p>
-                                    <p><strong>氛围：</strong><span class="editable" data-field="scene_setting.atmosphere">${storyline.scene_setting?.atmosphere || '未知'}</span></p>
-                                    <p><strong>天气：</strong><span class="editable" data-field="scene_setting.weather">${storyline.scene_setting?.weather || '未知'}</span></p>
-                                </div>
-                                
-                                <div class="storyline-section mb-3">
-                                    <h6 class="text-primary">情节要点</h6>
-                                    <div class="editable" data-field="plot_points">
-                                        <ul>
-                                            ${(storyline.plot_points || []).map(point => `<li>${point}</li>`).join('')}
-                                        </ul>
-                                    </div>
-                                </div>
-                                
-                                <div class="storyline-section mb-3">
-                                    <h6 class="text-primary">关键事件</h6>
-                                    <div class="editable" data-field="key_events">
-                                        <ul>
-                                            ${(storyline.key_events || []).map(event => `<li>${event}</li>`).join('')}
-                                        </ul>
-                                    </div>
-                                </div>
-                                
-                                <div class="storyline-section mb-3">
-                                    <h6 class="text-primary">伏笔设置</h6>
-                                    <div class="editable" data-field="foreshadowing">
-                                        <ul>
-                                            ${(storyline.foreshadowing || []).map(hint => `<li>${hint}</li>`).join('')}
-                                        </ul>
-                                    </div>
-                                </div>
-                                
-                                <div class="storyline-section mb-3">
-                                    <h6 class="text-primary">章节结尾</h6>
-                                    <p class="editable" data-field="chapter_ending">${storyline.chapter_ending || '未知'}</p>
-                                </div>
-                                
-                                <div class="storyline-section mb-3">
-                                    <h6 class="text-primary">下章预告</h6>
-                                    <p class="editable" data-field="next_chapter_hint">${storyline.next_chapter_hint || '未知'}</p>
-                                </div>
-                                
-                                <div class="step-actions mt-4">
-                                    <button class="btn btn-warning btn-sm" onclick="regenerateContinuationStep('storyline_generation')">
-                                        <i class="fas fa-redo me-2"></i>重新生成故事线
-                                    </button>
-                                    <button class="btn btn-info btn-sm" onclick="improveContinuationStep('storyline_generation')">
-                                        <i class="fas fa-magic me-2"></i>改进故事线
-                                    </button>
-                                    <button id="save-continuation-storyline-btn" class="btn btn-success btn-sm" style="display: none;" onclick="saveContinuationStorylineContent()">
-                                        <i class="fas fa-save me-2"></i>保存修改
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    `;
-                } else {
-                    contentElement.innerHTML = `
-                        <div class="alert alert-info">
-                            <i class="fas fa-info-circle me-2"></i>
-                            暂无续写故事线数据
-                        </div>
-                    `;
-                }
-            }
-        } catch (error) {
-            contentElement.innerHTML = `
-                <div class="alert alert-danger">
-                    <i class="fas fa-exclamation-triangle me-2"></i>
-                    加载续写故事线详情失败: ${error.message}
-                </div>
-            `;
-        }
-    },
-    
-    loadContinuationStorylineImprovementDetails: async (contentElement) => {
-        contentElement.innerHTML = `
-            <div class="alert alert-info">
-                <i class="fas fa-info-circle me-2"></i>
-                故事线优化详情功能开发中...
+        <div class="card shadow-sm mb-3">
+            <div class="card-header bg-secondary text-white d-flex justify-content-between align-items-center">
+                <span><i class="fas fa-user-group me-2"></i>配角</span>
+                <button class="btn btn-sm btn-light" onclick="App.addSupChar()">
+                    <i class="fas fa-plus me-1"></i>新增配角
+                </button>
             </div>
-        `;
-    },
-    
-    loadContinuationQualityAssessmentDetails: async (contentElement) => {
-        try {
-            // 尝试获取续写故事线质量评估数据
-            const qualityResponse = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/data/continuation_storyline_quality_assessment`);
-            
-            if (qualityResponse.success) {
-                const quality = qualityResponse.data;
-                
-                contentElement.innerHTML = `
-                    <div class="step-detail-content">
-                        <h6><i class="fas fa-clipboard-check me-2"></i>续写故事线质量评估</h6>
-                        
-                        <div class="quality-summary mb-3">
-                            <div class="row">
-                                <div class="col-md-6">
-                                    <div class="quality-metric">
-                                        <span class="metric-label">总体评分:</span>
-                                        <span class="metric-value score-${quality.quality_level || 'medium'}">${quality.overall_score || '未知'}</span>
-                                    </div>
-                                </div>
-                                <div class="col-md-6">
-                                    <div class="quality-metric">
-                                        <span class="metric-label">质量等级:</span>
-                                        <span class="quality-badge quality-${quality.quality_level || 'medium'}">${quality.quality_level || '未知'}</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        ${quality.suggestions && quality.suggestions.length > 0 ? `
-                        <div class="quality-suggestions mb-3">
-                            <h6><i class="fas fa-lightbulb me-2"></i>改进建议</h6>
-                            <ul class="list-unstyled">
-                                ${quality.suggestions.map(suggestion => `
-                                    <li><i class="fas fa-arrow-right me-2 text-primary"></i>${suggestion}</li>
-                                `).join('')}
-                            </ul>
-                        </div>
-                        ` : ''}
-                        
-                        <div class="quality-actions">
-                            <button class="btn btn-primary btn-sm me-2" onclick="assessContinuationQuality('storyline')">
-                                <i class="fas fa-redo me-1"></i>重新评估
-                            </button>
-                            ${quality.overall_score < 60 ? `
-                            <button class="btn btn-warning btn-sm" onclick="optimizeContinuationStorylineBasedOnQuality()">
-                                <i class="fas fa-magic me-1"></i>智能优化
-                            </button>
-                            ` : ''}
-                        </div>
-                    </div>
-                `;
-            } else {
-                contentElement.innerHTML = `
-                    <div class="alert alert-warning">
-                        <i class="fas fa-exclamation-triangle me-2"></i>
-                        暂无质量评估数据，请先生成续写故事线
-                        <div class="mt-2">
-                            <button class="btn btn-primary btn-sm" onclick="assessContinuationQuality('storyline')">
-                                <i class="fas fa-clipboard-check me-1"></i>开始质量评估
-                            </button>
-                        </div>
-                    </div>
-                `;
-            }
-        } catch (error) {
-            contentElement.innerHTML = `
-                <div class="alert alert-danger">
-                    <i class="fas fa-exclamation-circle me-2"></i>
-                    加载质量评估数据失败: ${error.message}
-                </div>
-            `;
-        }
-    },
-    
-    loadContinuationChapterDetails: async (contentElement) => {
-        try {
-            // 优先从已保存的章节文件中获取数据（历史记录）
-            let chapter = null;
-            const chaptersResponse = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/chapters`);
-            if (chaptersResponse.success && chaptersResponse.data.length > 0) {
-                // 获取最新的章节（续写章节）
-                chapter = chaptersResponse.data[chaptersResponse.data.length - 1];
-            }
-            
-            // 如果已保存的章节中没有数据，再尝试从缓存中获取
-            if (!chapter) {
-                const response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/continuation-status`);
-                if (response.success && response.data.continuation_state) {
-                    chapter = response.data.continuation_state.next_chapter_content;
-                }
-            }
-            
-            if (chapter) {
-                    
-                    // 获取质量评估数据
-                    let qualityAssessment = null;
-                    try {
-                        const qualityResponse = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/data/continuation_chapter_quality_assessment`);
-                        if (qualityResponse.success) {
-                            qualityAssessment = qualityResponse.data;
-                            console.log('质量评估数据:', qualityAssessment);
-                        }
-                    } catch (error) {
-                        console.log('未找到续写章节质量评估数据，这是正常的，因为还没有进行质量评估');
-                    }
-                    
-                    // 检查是否有解析错误
-                    if (chapter.parse_error) {
-                        contentElement.innerHTML = `
-                            <div class="step-detail-content">
-                                <h6><i class="fas fa-pen-fancy me-2"></i>续写章节详情</h6>
-                                
-                                <div class="alert alert-warning">
-                                    <i class="fas fa-exclamation-triangle me-2"></i>
-                                    <strong>章节生成出现问题</strong><br>
-                                    章节内容生成时遇到技术问题，可能是由于网络超时或API限制导致的。
-                                </div>
-                                
-                                <div class="chapter-actions mb-3">
-                                    <button class="btn btn-warning btn-sm" onclick="regenerateContinuationStep('chapter_writing')">
-                                        <i class="fas fa-redo me-2"></i>重新生成章节
-                                    </button>
-                                    <button class="btn btn-outline-secondary btn-sm" onclick="clearContinuationChapterCache()">
-                                        <i class="fas fa-trash me-2"></i>清除错误数据
-                                    </button>
-                                </div>
-                                
-                                <div class="alert alert-info">
-                                    <i class="fas fa-info-circle me-2"></i>
-                                    <strong>建议操作：</strong><br>
-                                    1. 点击"重新生成章节"按钮重新生成内容<br>
-                                    2. 如果问题持续，可以点击"清除错误数据"后重新开始
-                                </div>
-                            </div>
-                        `;
-                    } else {
-                        contentElement.innerHTML = `
-                            <div class="step-detail-content">
-                                <h6><i class="fas fa-pen-fancy me-2"></i>续写章节详情</h6>
-                                
-                                <div class="chapter-actions mb-3">
-                                    <button class="btn btn-outline-info btn-sm" onclick="assessContinuationQuality('story')">
-                                        <i class="fas fa-star me-1"></i>质量评估
-                                    </button>
-                                    <button class="btn btn-warning btn-sm" onclick="regenerateContinuationStep('chapter_writing')">
-                                        <i class="fas fa-redo me-2"></i>重新生成章节
-                                    </button>
-                                </div>
-                                
-                                <div class="chapter-details">
-                                    ${qualityAssessment ? `
-                                        <div class="quality-assessment mb-3">
-                                            <div class="quality-score ${qualityAssessment.overall_score >= 80 ? 'high' : qualityAssessment.overall_score >= 60 ? 'medium' : 'low'}">
-                                                <i class="fas fa-star me-2"></i>
-                                                质量评分: ${qualityAssessment.overall_score}分
-                                            </div>
-                                            ${qualityAssessment.suggestions && qualityAssessment.suggestions.length > 0 ? `
-                                                <div class="quality-suggestions mt-2">
-                                                    <h6 class="text-warning">改进建议:</h6>
-                                                    <ul class="suggestions-list">
-                                                        ${qualityAssessment.suggestions.map(suggestion => `<li>${suggestion}</li>`).join('')}
-                                                    </ul>
-                                                </div>
-                                            ` : ''}
-                                        </div>
-                                    ` : ''}
-                                    
-                                    <div class="chapter-section mb-3">
-                                        <h6 class="text-primary">章节信息</h6>
-                                        <p><strong>标题：</strong>${chapter.title || '未知'}</p>
-                                        <p><strong>字数：</strong>${chapter.word_count || (chapter.content ? chapter.content.length : 0) || '未知'}</p>
-                                    </div>
-                                    
-                                    <div class="chapter-section mb-3">
-                                        <h6 class="text-primary">章节概要</h6>
-                                        <p class="${chapter.summary && !chapter.summary.includes('待') ? '' : 'text-muted'}">
-                                            ${chapter.summary || '章节概要待生成'}
-                                        </p>
-                                    </div>
-                                    
-                                    <div class="chapter-section mb-3">
-                                        <h6 class="text-primary">关键事件</h6>
-                                        <ul>
-                                            ${(chapter.key_events || []).length > 0 ? 
-                                                (chapter.key_events || []).map(event => `<li>${event}</li>`).join('') :
-                                                '<li class="text-muted">关键事件待提取</li>'
-                                            }
-                                        </ul>
-                                    </div>
-                                    
-                                    <div class="chapter-section mb-3">
-                                        <h6 class="text-primary">人物发展</h6>
-                                        <p class="${chapter.character_development && !chapter.character_development.includes('待') ? '' : 'text-muted'}">
-                                            ${chapter.character_development || '人物发展待描述'}
-                                        </p>
-                                    </div>
-                                    
-                                    <div class="chapter-section mb-3">
-                                        <h6 class="text-primary">伏笔设置</h6>
-                                        <ul>
-                                            ${(chapter.foreshadowing || []).length > 0 ? 
-                                                (chapter.foreshadowing || []).map(hint => `<li>${hint}</li>`).join('') :
-                                                '<li class="text-muted">伏笔设置待分析</li>'
-                                            }
-                                        </ul>
-                                    </div>
-                                    
-                                    <div class="chapter-section mb-3">
-                                        <h6 class="text-primary">下章预告</h6>
-                                        <p class="${chapter.next_chapter_hint && !chapter.next_chapter_hint.includes('待') ? '' : 'text-muted'}">
-                                            ${chapter.next_chapter_hint || '下章预告待生成'}
-                                        </p>
-                                    </div>
-                                    
-                                    <div class="chapter-section mb-3">
-                                        <h6 class="text-primary">章节内容预览</h6>
-                                        <div class="chapter-text" style="max-height: 300px; overflow-y: auto; border: 1px solid #e9ecef; padding: 15px; border-radius: 5px; background-color: #f8f9fa;">
-                                            ${Utils.formatChapterContent((chapter.content || '').substring(0, 1500))}${(chapter.content || '').length > 1500 ? '...' : ''}
-                                        </div>
-                                        <button class="btn btn-outline-primary btn-sm mt-2" onclick="showContinuationChapterModal('${AppState.currentNovelId}')">
-                                            <i class="fas fa-eye me-1"></i>查看完整内容
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        `;
-                    }
-                } else {
-                    contentElement.innerHTML = `
-                        <div class="alert alert-info">
-                            <i class="fas fa-info-circle me-2"></i>
-                            暂无续写章节数据
-                        </div>
-                    `;
-                }
-        } catch (error) {
-            contentElement.innerHTML = `
-                <div class="alert alert-danger">
-                    <i class="fas fa-exclamation-triangle me-2"></i>
-                    加载续写章节详情失败: ${error.message}
-                </div>
-            `;
-        }
-    },
-    
-    loadContinuationChapterQualityDetails: async (contentElement) => {
-        try {
-            // 尝试获取续写章节质量评估数据
-            const qualityResponse = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/data/continuation_chapter_quality_assessment`);
-            
-            if (qualityResponse.success) {
-                const quality = qualityResponse.data;
-                
-                contentElement.innerHTML = `
-                    <div class="step-detail-content">
-                        <h6><i class="fas fa-clipboard-check me-2"></i>续写章节质量评估</h6>
-                        
-                        <div class="quality-summary mb-3">
-                            <div class="row">
-                                <div class="col-md-6">
-                                    <div class="quality-metric">
-                                        <span class="metric-label">总体评分:</span>
-                                        <span class="metric-value score-${quality.quality_level || 'medium'}">${quality.overall_score || '未知'}</span>
-                                    </div>
-                                </div>
-                                <div class="col-md-6">
-                                    <div class="quality-metric">
-                                        <span class="metric-label">质量等级:</span>
-                                        <span class="quality-badge quality-${quality.quality_level || 'medium'}">${quality.quality_level || '未知'}</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        ${quality.suggestions && quality.suggestions.length > 0 ? `
-                        <div class="quality-suggestions mb-3">
-                            <h6><i class="fas fa-lightbulb me-2"></i>改进建议</h6>
-                            <ul class="list-unstyled">
-                                ${quality.suggestions.map(suggestion => `
-                                    <li><i class="fas fa-arrow-right me-2 text-primary"></i>${suggestion}</li>
-                                `).join('')}
-                            </ul>
-                        </div>
-                        ` : ''}
-                        
-                        <div class="quality-actions">
-                            <button class="btn btn-primary btn-sm me-2" onclick="assessContinuationQuality('story')">
-                                <i class="fas fa-redo me-1"></i>重新评估
-                            </button>
-                            ${quality.overall_score < 60 ? `
-                            <button class="btn btn-warning btn-sm" onclick="improveContinuationStep('chapter_writing')">
-                                <i class="fas fa-magic me-1"></i>智能优化
-                            </button>
-                            ` : ''}
-                        </div>
-                    </div>
-                `;
-            } else {
-                contentElement.innerHTML = `
-                    <div class="alert alert-warning">
-                        <i class="fas fa-exclamation-triangle me-2"></i>
-                        暂无章节质量评估数据，请先写作续写章节
-                        <div class="mt-2">
-                            <button class="btn btn-primary btn-sm" onclick="assessContinuationQuality('story')">
-                                <i class="fas fa-clipboard-check me-1"></i>开始质量评估
-                            </button>
-                        </div>
-                    </div>
-                `;
-            }
-        } catch (error) {
-            contentElement.innerHTML = `
-                <div class="alert alert-danger">
-                    <i class="fas fa-exclamation-circle me-2"></i>
-                    加载章节质量评估数据失败: ${error.message}
-                </div>
-            `;
-        }
-    },
-    
-    loadContinuationChapterSaveDetails: async (contentElement) => {
-        try {
-            // 获取已保存的章节列表
-            const chaptersResponse = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/chapters`);
-            
-            if (chaptersResponse.success && chaptersResponse.data.length > 0) {
-                const chapters = chaptersResponse.data;
-                const latestChapter = chapters[chapters.length - 1];
-                
-                contentElement.innerHTML = `
-                    <div class="step-detail-content">
-                        <h6><i class="fas fa-save me-2"></i>续写章节保存状态</h6>
-                        
-                        <div class="save-status mb-3">
-                            <div class="alert alert-success">
-                                <i class="fas fa-check-circle me-2"></i>
-                                最新章节已成功保存
-                            </div>
-                        </div>
-                        
-                        <div class="chapter-info mb-3">
-                            <div class="row">
-                                <div class="col-md-4">
-                                    <div class="info-item">
-                                        <span class="info-label">章节编号:</span>
-                                        <span class="info-value">第 ${latestChapter.chapter_number || '未知'} 章</span>
-                                    </div>
-                                </div>
-                                <div class="col-md-4">
-                                    <div class="info-item">
-                                        <span class="info-label">字数统计:</span>
-                                        <span class="info-value">${latestChapter.word_count || 0} 字</span>
-                                    </div>
-                                </div>
-                                <div class="col-md-4">
-                                    <div class="info-item">
-                                        <span class="info-label">保存时间:</span>
-                                        <span class="info-value">${Utils.formatDate(latestChapter.created_at)}</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        ${latestChapter.title ? `
-                        <div class="chapter-title mb-3">
-                            <h6><i class="fas fa-heading me-2"></i>章节标题</h6>
-                            <p class="chapter-title-text">${latestChapter.title}</p>
-                        </div>
-                        ` : ''}
-                        
-                        <div class="save-actions">
-                            <button class="btn btn-outline-primary btn-sm me-2" onclick="window.location.reload()">
-                                <i class="fas fa-sync-alt me-1"></i>刷新状态
-                            </button>
-                            <button class="btn btn-success btn-sm" onclick="startNextChapter()">
-                                <i class="fas fa-plus me-1"></i>开始下一章
-                            </button>
-                        </div>
-                    </div>
-                `;
-            } else {
-                contentElement.innerHTML = `
-                    <div class="alert alert-warning">
-                        <i class="fas fa-exclamation-triangle me-2"></i>
-                        暂无已保存的续写章节数据
-                        <div class="mt-2">
-                            <button class="btn btn-primary btn-sm" onclick="executeContinuationStep('chapter_writing')">
-                                <i class="fas fa-pen me-1"></i>开始写作章节
-                            </button>
-                        </div>
-                    </div>
-                `;
-            }
-        } catch (error) {
-            contentElement.innerHTML = `
-                <div class="alert alert-danger">
-                    <i class="fas fa-exclamation-circle me-2"></i>
-                    加载章节保存状态失败: ${error.message}
-                </div>
-            `;
-        }
-    },
-    
-    // 加载续写内容改进详情
-    loadContinuationContentImprovementDetails: async (contentElement) => {
-        try {
-            // 获取续写章节内容
-            const response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/continuation-status`);
-            
-            if (response.success && response.data.continuation_state) {
-                const chapterContent = response.data.continuation_state.next_chapter_content;
-                
-                if (chapterContent) {
-                    contentElement.innerHTML = `
-                        <div class="step-detail-content">
-                            <h6><i class="fas fa-edit me-2"></i>续写内容改进</h6>
-                            
-                            <div class="improvement-info mb-3">
-                                <div class="alert alert-info">
-                                    <i class="fas fa-info-circle me-2"></i>
-                                    基于质量评估结果对章节内容进行智能优化
-                                </div>
-                            </div>
-                            
-                            <div class="chapter-preview mb-3">
-                                <h6><i class="fas fa-eye me-2"></i>当前章节内容预览</h6>
-                                <div class="content-preview">
-                                    <p class="text-muted">${(chapterContent.content || '').substring(0, 200)}${(chapterContent.content || '').length > 200 ? '...' : ''}</p>
-                                </div>
-                            </div>
-                            
-                            <div class="improvement-actions">
-                                <button class="btn btn-primary btn-sm me-2" onclick="improveContinuationStep('chapter_writing')">
-                                    <i class="fas fa-magic me-1"></i>开始改进
-                                </button>
-                                <button class="btn btn-outline-secondary btn-sm" onclick="executeContinuationStep('chapter_save')">
-                                    <i class="fas fa-forward me-1"></i>跳过改进
-                                </button>
-                            </div>
-                        </div>
-                    `;
-                } else {
-                    contentElement.innerHTML = `
-                        <div class="alert alert-warning">
-                            <i class="fas fa-exclamation-triangle me-2"></i>
-                            暂无章节内容，请先完成章节写作
-                            <div class="mt-2">
-                                <button class="btn btn-primary btn-sm" onclick="executeContinuationStep('chapter_writing')">
-                                    <i class="fas fa-pen me-1"></i>开始写作章节
-                                </button>
-                            </div>
-                        </div>
-                    `;
-                }
-            } else {
-                contentElement.innerHTML = `
-                    <div class="alert alert-warning">
-                        <i class="fas fa-exclamation-triangle me-2"></i>
-                        无法获取章节内容数据
-                    </div>
-                `;
-            }
-        } catch (error) {
-            contentElement.innerHTML = `
-                <div class="alert alert-danger">
-                    <i class="fas fa-exclamation-circle me-2"></i>
-                    加载内容改进详情失败: ${error.message}
-                </div>
-            `;
-        }
-    }
-};
+            <div class="card-body" id="supList">${supRows || `<div class="text-muted small">暂无配角</div>`}</div>
+        </div>
+        <button class="btn btn-primary" onclick="App.saveCharsTab()"><i class="fas fa-save me-1"></i>保存角色档案</button>
+        <span class="text-warning small ms-2">
+            <i class="fas fa-triangle-exclamation me-1"></i>修改后建议重新跑一次 Canon 校验
+        </span>`;
+}
 
-// 全局函数（供HTML调用）
-window.showWelcome = Navigation.showWelcome;
-window.showCreateNovel = Navigation.showCreateNovel;
-window.showContinueNovel = Navigation.showContinueNovel;
-window.showNovelList = Navigation.showNovelList;
+function charSupRow(s, i) {
+    const b = s.basic_info || {};
+    return `
+    <div class="sup-row mb-3 p-3 rounded" data-sup-idx="${i}">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <span class="badge bg-light text-dark">配角 #${i + 1}</span>
+            <button class="btn btn-sm btn-outline-danger" onclick="App.removeSupChar(${i})">
+                <i class="fas fa-trash"></i> 删除
+            </button>
+        </div>
+        <div class="row g-2">
+            <div class="col-md-3"><label class="form-label small">姓名</label>
+                <input class="form-control form-control-sm" data-sfield="name" value="${Util.escape(b.name || "")}" /></div>
+            <div class="col-md-2"><label class="form-label small">性别</label>
+                <select class="form-select form-select-sm" data-sfield="gender">
+                    <option value="男" ${b.gender === "男" ? "selected" : ""}>男</option>
+                    <option value="女" ${b.gender === "女" ? "selected" : ""}>女</option>
+                    <option value="未知" ${!b.gender || (b.gender !== "男" && b.gender !== "女") ? "selected" : ""}>未知</option>
+                </select></div>
+            <div class="col-md-2"><label class="form-label small">年龄</label>
+                <input class="form-control form-control-sm" type="number" data-sfield="age" value="${b.age || ""}" /></div>
+            <div class="col-md-5"><label class="form-label small">角色定位</label>
+                <input class="form-control form-control-sm" data-srole value="${Util.escape(s.role || "")}" placeholder="如：助手 / 反派 / 受害者" /></div>
+            <div class="col-md-12"><label class="form-label small">职业</label>
+                <input class="form-control form-control-sm" data-sfield="occupation" value="${Util.escape(b.occupation || "")}" /></div>
+            <div class="col-md-12"><label class="form-label small">背景</label>
+                <textarea class="form-control form-control-sm" data-sfield="background" rows="2">${Util.escape(b.background || "")}</textarea></div>
+            <div class="col-md-12"><label class="form-label small">性格</label>
+                <textarea class="form-control form-control-sm" data-spersonality rows="2">${Util.escape(typeof s.personality === "string" ? s.personality : JSON.stringify(s.personality || ""))}</textarea></div>
+            <div class="col-md-12"><label class="form-label small">与主角的关系</label>
+                <textarea class="form-control form-control-sm" data-srel rows="2">${Util.escape(s.relationship_with_main || "")}</textarea></div>
+        </div>
+    </div>`;
+}
 
-// 重置小说选择
-window.resetNovelSelection = () => {
-    // 重置选择状态
-    AppState.selectedNovelId = null;
-    
-    // 隐藏续写需求表单
-    const continuationForm = document.getElementById('continuation-form');
-    if (continuationForm) {
-        continuationForm.style.display = 'none';
-    }
-    
-    // 恢复小说选择列表的原始HTML结构
-    const novelSelection = document.getElementById('novel-selection');
-    if (novelSelection) {
-        novelSelection.innerHTML = `
-            <div class="mb-3">
-                <label class="form-label">选择要续写的小说</label>
-                <div id="novel-list" class="list-group">
-                    <!-- 小说列表将在这里动态加载 -->
-                </div>
+/* ============================================================
+ * 视图 7：题材库主页 + 题材编辑大页
+ * ============================================================ */
+async function renderGenresHome(root) {
+    State.currentNovelId = null;
+    const genres = await Util.get("/genres");
+    State.genres = genres;
+    root.innerHTML = `
+        <div class="d-flex align-items-center mb-4 flex-wrap gap-2">
+            <button class="btn btn-sm btn-outline-secondary" onclick="App.go('#/')"><i class="fas fa-arrow-left"></i></button>
+            <h3 class="mb-0"><i class="fas fa-palette text-primary me-2"></i>题材库</h3>
+            <span class="badge bg-light text-dark ms-2">${genres.length} 个</span>
+            <div class="ms-auto d-flex gap-2">
+                <button class="btn btn-info" onclick="App.openGenerateGenreModal()">
+                    <i class="fas fa-wand-magic-sparkles me-1"></i>LLM 一键造题材
+                </button>
+                <button class="btn btn-primary" onclick="App.go('#/genres/new')">
+                    <i class="fas fa-plus me-1"></i>手动新建
+                </button>
             </div>
-        `;
-        novelSelection.style.display = 'block';
-    }
-    
-    // 清空续写需求输入框
-    const requirementsInput = document.getElementById('continuation-requirements');
-    if (requirementsInput) {
-        requirementsInput.value = '';
-    }
-    
-    // 重新加载小说列表
-    NovelManager.loadContinuationNovelList();
-};
+        </div>
+        <div class="row g-4">
+            ${genres.map(genreCard).join("") || `
+                <div class="col-12 text-center py-5 text-muted">
+                    <i class="fas fa-palette fa-3x mb-2"></i>
+                    <div>题材库为空，点击右上角新建</div>
+                </div>`}
+        </div>`;
+}
 
-// 显示小说详情用于续写选择
-const showNovelDetailForContinuation = (novel, chapters) => {
-    const container = document.getElementById('novel-selection');
-    
-    const detailHtml = `
-        <div class="novel-detail-for-continuation">
-            <div class="card border-0 shadow-sm mb-4">
-                <div class="card-header bg-light">
-                    <h5 class="mb-0">
-                        <i class="fas fa-book me-2"></i>
-                        ${novel.title || '未命名小说'}
-                    </h5>
+function genreCard(g) {
+    const tags = g.default_tags || {};
+    const tagPreview = Object.values(tags).flat().slice(0, 4)
+        .map(t => `<span class="badge bg-light text-dark me-1">${Util.escape(t)}</span>`).join("");
+    return `
+    <div class="col-md-6 col-xl-4">
+        <div class="card genre-card h-100 shadow-sm" onclick="App.go('#/genres/${encodeURIComponent(g.name)}')">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start mb-2">
+                    <h5 class="card-title mb-0"><i class="fas fa-bookmark text-primary me-2"></i>${Util.escape(g.display_name || g.name)}</h5>
+                    <code class="text-muted small">${Util.escape(g.name)}</code>
                 </div>
-                <div class="card-body">
-                    <div class="row">
-                        <div class="col-md-6">
-                            <div class="novel-info">
-                                <h6 class="text-primary">基本信息</h6>
-                                <p><strong>标题:</strong> ${novel.title || '未命名'}</p>
-                                <p><strong>状态:</strong> <span class="badge bg-${novel.status === 'completed' ? 'success' : 'warning'}">${novel.status || '未知'}</span></p>
-                                <p><strong>创建时间:</strong> ${Utils.formatDate(novel.created_at)}</p>
-                                <p><strong>更新时间:</strong> ${Utils.formatDate(novel.updated_at)}</p>
-                                <p><strong>章节数:</strong> ${chapters.length}</p>
-                            </div>
-                        </div>
-                        <div class="col-md-6">
-                            <div class="novel-stats">
-                                <h6 class="text-primary">统计信息</h6>
-                                <div class="row text-center">
-                                    <div class="col-6">
-                                        <div class="stat-item">
-                                            <h4 class="text-primary">${chapters.length}</h4>
-                                            <small class="text-muted">已写章节</small>
-                                        </div>
-                                    </div>
-                                    <div class="col-6">
-                                        <div class="stat-item">
-                                            <h4 class="text-success">${chapters.reduce((total, ch) => total + (ch.word_count || 0), 0)}</h4>
-                                            <small class="text-muted">总字数</small>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    ${chapters.length > 0 ? `
-                        <div class="mt-4">
-                            <h6 class="text-primary">已有章节</h6>
-                            <div class="chapters-preview" id="chapters-preview-${AppState.selectedNovelId}">
-                                ${chapters.slice(-3).map(chapter => `
-                                    <div class="chapter-preview-item d-flex justify-content-between align-items-center p-2 border rounded mb-2">
-                                        <div>
-                                            <strong>${chapter.title || `第${chapter.chapter_number}章`}</strong>
-                                            <small class="text-muted ms-2">${Utils.formatDate(chapter.created_at)}</small>
-                                            <span class="badge bg-secondary ms-2">${chapter.word_count || 0}字</span>
-                                        </div>
-                                        <button class="btn btn-sm btn-outline-primary" onclick="viewChapterInModal('${AppState.selectedNovelId}', ${chapter.chapter_number})" title="查看章节内容">
-                                            <i class="fas fa-eye"></i>
-                                        </button>
-                                    </div>
-                                `).join('')}
-                                ${chapters.length > 3 ? `
-                                    <div class="text-center mt-2">
-                                        <button class="btn btn-sm btn-outline-secondary" onclick="toggleAllChapters('${AppState.selectedNovelId}', ${chapters.length})" id="toggle-chapters-btn-${AppState.selectedNovelId}">
-                                            <i class="fas fa-chevron-down me-1"></i>还有 ${chapters.length - 3} 个章节...
-                                        </button>
-                                    </div>
-                                    <div class="all-chapters" id="all-chapters-${AppState.selectedNovelId}" style="display: none;">
-                                        ${chapters.slice(0, -3).map(chapter => `
-                                            <div class="chapter-preview-item d-flex justify-content-between align-items-center p-2 border rounded mb-2">
-                                                <div>
-                                                    <strong>${chapter.title || `第${chapter.chapter_number}章`}</strong>
-                                                    <small class="text-muted ms-2">${Utils.formatDate(chapter.created_at)}</small>
-                                                    <span class="badge bg-secondary ms-2">${chapter.word_count || 0}字</span>
-                                                </div>
-                                                <button class="btn btn-sm btn-outline-primary" onclick="viewChapterInModal('${AppState.selectedNovelId}', ${chapter.chapter_number})" title="查看章节内容">
-                                                    <i class="fas fa-eye"></i>
-                                                </button>
-                                            </div>
-                                        `).join('')}
-                                    </div>
-                                ` : ''}
-                            </div>
-                        </div>
-                    ` : `
-                        <div class="mt-4">
-                            <div class="alert alert-info">
-                                <i class="fas fa-info-circle me-2"></i>
-                                这是一部新小说，还没有任何章节。您可以开始创作第一章。
-                            </div>
-                        </div>
-                    `}
-                </div>
+                <div class="text-muted small mb-3">${Util.escape(g.one_liner || "—")}</div>
+                <div>${tagPreview || '<span class="text-muted small">无标签</span>'}</div>
             </div>
-            
-            <div class="card border-0 shadow-sm">
-                <div class="card-header bg-success text-white">
-                    <h5 class="mb-0">
-                        <i class="fas fa-edit me-2"></i>选择续写方式
-                    </h5>
-                </div>
-                <div class="card-body">
+            <div class="card-footer bg-light d-flex justify-content-end gap-2" onclick="event.stopPropagation()">
+                <button class="btn btn-sm btn-outline-primary" onclick="App.go('#/genres/${encodeURIComponent(g.name)}')">
+                    <i class="fas fa-pen-to-square me-1"></i>编辑
+                </button>
+                <button class="btn btn-sm btn-outline-danger" onclick="App.deleteGenre('${g.name}')">
+                    <i class="fas fa-trash"></i>
+                </button>
+            </div>
+        </div>
+    </div>`;
+}
+
+/** 题材编辑大页：name=null 表示新建。 */
+async function renderGenreEdit(root, name, presetData = null) {
+    let g;
+    let isNew = false;
+    if (name) {
+        g = await Util.get(`/genres/${encodeURIComponent(name)}`);
+    } else {
+        isNew = true;
+        g = presetData || {
+            name: "",
+            display_name: "",
+            one_liner: "",
+            style_guide: "",
+            allowed_elements: [],
+            forbidden_elements: [],
+            banned_phrases: [],
+            default_tags: { "类型标签": [], "主题标签": [], "风格标签": [], "受众标签": [] },
+            default_world_setting: { era: "", world_archetype: "", power_system: "", tech_baseline: "", key_locations: [] },
+            default_themes: [],
+            spec_template: {
+                user_requirements_template: "",
+                protagonist_skeleton: { basic_info: {}, personality: { traits: [] } },
+                supporting_skeletons: [],
+            },
+        };
+    }
+    // 缓存当前编辑对象，方便保存时拿
+    State._editingGenre = g;
+    State._editingGenreIsNew = isNew;
+
+    const ws = g.default_world_setting || {};
+    const tags = g.default_tags || {};
+    const st = g.spec_template || {};
+    const proto = (st.protagonist_skeleton || {}).basic_info || {};
+    const protoPers = (st.protagonist_skeleton || {}).personality || {};
+
+    root.innerHTML = `
+        <div class="d-flex align-items-center mb-4 flex-wrap gap-2">
+            <button class="btn btn-sm btn-outline-secondary" onclick="App.go('#/genres')"><i class="fas fa-arrow-left"></i></button>
+            <h3 class="mb-0">
+                ${isNew ? '<i class="fas fa-plus-circle text-primary me-2"></i>新建题材' : '<i class="fas fa-pen-to-square text-primary me-2"></i>编辑题材'}
+            </h3>
+            ${!isNew ? `<code class="ms-2 text-muted">${Util.escape(g.name)}</code>` : ""}
+            <div class="ms-auto">
+                <button class="btn btn-success" onclick="App.saveGenre()">
+                    <i class="fas fa-save me-1"></i>${isNew ? "保存为新题材" : "保存修改"}
+                </button>
+            </div>
+        </div>
+
+        <ul class="nav nav-tabs mb-3" role="tablist">
+            <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#g-basic">基本信息</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#g-rules">风格与禁忌</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#g-world">世界观与标签</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#g-template">主角骨架</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#g-raw">原始 JSON</button></li>
+        </ul>
+        <div class="tab-content">
+
+            <!-- 基本信息 -->
+            <div class="tab-pane fade show active" id="g-basic">
+                <div class="card shadow-sm"><div class="card-body">
                     <div class="row g-3">
                         <div class="col-md-4">
-                            <div class="continuation-option-card h-100">
-                                <div class="card h-100 border-2">
-                                    <div class="card-body text-center">
-                                        <div class="option-icon mb-3">
-                                            <i class="fas fa-plus-circle fa-3x text-primary"></i>
-                                        </div>
-                                        <h6 class="card-title">写新章节</h6>
-                                        <p class="card-text text-muted small">
-                                            继续故事发展，创作新的章节内容
-                                        </p>
-                                        <button class="btn btn-primary" onclick="startNewChapterContinuation()">
-                                            <i class="fas fa-play me-2"></i>开始续写
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
+                            <label class="form-label">英文 name <span class="text-danger">*</span></label>
+                            <input class="form-control" id="gName" value="${Util.escape(g.name || "")}" ${isNew ? "" : "disabled"}
+                                   placeholder="如 wuxia / cyberpunk" />
+                            <div class="form-text">仅小写字母 / 数字 / 下划线，2-32 字符。${isNew ? "" : '已存在题材的 name 不可改'}</div>
                         </div>
-                        
-                        ${chapters.length > 0 ? `
-                            <div class="col-md-4">
-                                <div class="continuation-option-card h-100">
-                                    <div class="card h-100 border-2">
-                                        <div class="card-body text-center">
-                                            <div class="option-icon mb-3">
-                                                <i class="fas fa-edit fa-3x text-warning"></i>
-                                            </div>
-                                            <h6 class="card-title">修改现有章节</h6>
-                                            <p class="card-text text-muted small">
-                                                优化或重写已有的章节内容
-                                            </p>
-                                            <button class="btn btn-warning" onclick="showChapterSelectionForEdit()">
-                                                <i class="fas fa-list me-2"></i>选择章节
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        ` : ''}
-                        
                         <div class="col-md-4">
-                            <div class="continuation-option-card h-100">
-                                <div class="card h-100 border-2">
-                                    <div class="card-body text-center">
-                                        <div class="option-icon mb-3">
-                                            <i class="fas fa-magic fa-3x text-info"></i>
-                                        </div>
-                                        <h6 class="card-title">优化内容</h6>
-                                        <p class="card-text text-muted small">
-                                            改进人物设定、故事线等基础内容
-                                        </p>
-                                        <button class="btn btn-info" onclick="startContentOptimization()">
-                                            <i class="fas fa-cogs me-2"></i>开始优化
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
+                            <label class="form-label">中文显示名</label>
+                            <input class="form-control" id="gDisplay" value="${Util.escape(g.display_name || "")}" placeholder="如 古典武侠" />
                         </div>
-                        
-                        <!-- 快速续写选项 -->
                         <div class="col-md-4">
-                            <div class="continuation-option-card h-100">
-                                <div class="card h-100 border-2 border-success">
-                                    <div class="card-body text-center">
-                                        <div class="option-icon mb-3">
-                                            <i class="fas fa-bolt fa-3x text-success"></i>
-                                        </div>
-                                        <h6 class="card-title">快速续写</h6>
-                                        <p class="card-text text-muted small">
-                                            自动续写多章或持续写作，一键完成完整流程
-                                        </p>
-                       <button class="btn btn-success" onclick="showQuickContinuationDialog()">
-                           <i class="fas fa-rocket me-2"></i>快速续写
-                       </button>
-                       <button class="btn btn-info btn-sm mt-2" onclick="checkQuickContinuationProgress()">
-                           <i class="fas fa-chart-line me-2"></i>查看进度
-                       </button>
-                                    </div>
-                                </div>
-                            </div>
+                            <label class="form-label">一句话简介</label>
+                            <input class="form-control" id="gOne" value="${Util.escape(g.one_liner || "")}" placeholder="≤40 字" />
                         </div>
                     </div>
-                    
-                    <div class="mt-4 text-center">
-                        <button type="button" class="btn btn-outline-secondary" onclick="resetNovelSelection()">
-                            <i class="fas fa-arrow-left me-2"></i>重新选择小说
+                </div></div>
+            </div>
+
+            <!-- 风格与禁忌 -->
+            <div class="tab-pane fade" id="g-rules">
+                <div class="card shadow-sm"><div class="card-body">
+                    <div class="mb-3">
+                        <label class="form-label">风格 / 语感指引（style_guide）</label>
+                        <textarea class="form-control" id="gStyle" rows="4">${Util.escape(g.style_guide || "")}</textarea>
+                        <div class="form-text">告诉写手该用什么腔调、节奏、意象密度、情绪温度</div>
+                    </div>
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label">允许出现的元素（每行一个）</label>
+                            <textarea class="form-control" id="gAllowed" rows="6">${Util.escape((g.allowed_elements || []).join("\n"))}</textarea>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">题材禁忌（每行一个）</label>
+                            <textarea class="form-control" id="gForbidden" rows="6">${Util.escape((g.forbidden_elements || []).join("\n"))}</textarea>
+                            <div class="form-text">如：现代科技、超能力</div>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">题材级禁词（每行一个）</label>
+                            <textarea class="form-control" id="gBanned" rows="6">${Util.escape((g.banned_phrases || []).join("\n"))}</textarea>
+                            <div class="form-text">写正文时绝对不能出现的词，会触发自动校验</div>
+                        </div>
+                    </div>
+                </div></div>
+            </div>
+
+            <!-- 世界观 + 标签 -->
+            <div class="tab-pane fade" id="g-world">
+                <div class="card shadow-sm mb-3"><div class="card-body">
+                    <h6 class="mb-3"><i class="fas fa-globe me-2"></i>默认世界观（default_world_setting）</h6>
+                    <div class="row g-3">
+                        <div class="col-md-3"><label class="form-label">时代</label>
+                            <input class="form-control" id="gWsEra" value="${Util.escape(ws.era || "")}" /></div>
+                        <div class="col-md-3"><label class="form-label">世界形态</label>
+                            <input class="form-control" id="gWsArch" value="${Util.escape(ws.world_archetype || "")}" /></div>
+                        <div class="col-md-3"><label class="form-label">力量体系</label>
+                            <input class="form-control" id="gWsPower" value="${Util.escape(ws.power_system || "")}" /></div>
+                        <div class="col-md-3"><label class="form-label">科技水平</label>
+                            <input class="form-control" id="gWsTech" value="${Util.escape(ws.tech_baseline || "")}" /></div>
+                        <div class="col-12"><label class="form-label">关键地点（每行一个）</label>
+                            <textarea class="form-control" id="gWsLoc" rows="3">${Util.escape((ws.key_locations || []).join("\n"))}</textarea></div>
+                    </div>
+                </div></div>
+                <div class="card shadow-sm mb-3"><div class="card-body">
+                    <h6 class="mb-3"><i class="fas fa-tags me-2"></i>默认标签（default_tags）</h6>
+                    <div class="row g-3">
+                        ${["类型标签", "主题标签", "风格标签", "受众标签"].map(cat => `
+                            <div class="col-md-6"><label class="form-label">${cat}（逗号分隔）</label>
+                                <input class="form-control" data-gtag="${cat}" value="${Util.escape((tags[cat] || []).join(", "))}" /></div>
+                        `).join("")}
+                    </div>
+                </div></div>
+                <div class="card shadow-sm"><div class="card-body">
+                    <h6 class="mb-3"><i class="fas fa-bullseye me-2"></i>默认主题（default_themes，每行一个）</h6>
+                    <textarea class="form-control" id="gThemes" rows="3">${Util.escape((g.default_themes || []).join("\n"))}</textarea>
+                </div></div>
+            </div>
+
+            <!-- 主角骨架 -->
+            <div class="tab-pane fade" id="g-template">
+                <div class="card shadow-sm mb-3"><div class="card-body">
+                    <h6 class="mb-3"><i class="fas fa-user-pen me-2"></i>spec_template 用户需求模板</h6>
+                    <textarea class="form-control" id="gUrTpl" rows="4">${Util.escape(st.user_requirements_template || "")}</textarea>
+                    <div class="form-text">可用占位符 <code>{title}</code> / <code>{protagonist_name}</code> / <code>{total_chapters}</code></div>
+                </div></div>
+                <div class="card shadow-sm"><div class="card-body">
+                    <h6 class="mb-3"><i class="fas fa-crown me-2"></i>主角骨架</h6>
+                    <div class="row g-3">
+                        <div class="col-md-2"><label class="form-label small">年龄</label>
+                            <input type="number" class="form-control form-control-sm" id="gProtoAge" value="${proto.age || ""}" /></div>
+                        <div class="col-md-2"><label class="form-label small">性别</label>
+                            <select class="form-select form-select-sm" id="gProtoGender">
+                                <option value="男" ${proto.gender === "男" ? "selected" : ""}>男</option>
+                                <option value="女" ${proto.gender === "女" ? "selected" : ""}>女</option>
+                            </select></div>
+                        <div class="col-md-8"><label class="form-label small">职业 / 身份</label>
+                            <input class="form-control form-control-sm" id="gProtoOcc" value="${Util.escape(proto.occupation || "")}" /></div>
+                        <div class="col-12"><label class="form-label small">通用出身设定</label>
+                            <textarea class="form-control form-control-sm" id="gProtoBg" rows="2">${Util.escape(proto.background || "")}</textarea></div>
+                        <div class="col-md-6"><label class="form-label small">性格关键词（逗号分隔）</label>
+                            <input class="form-control form-control-sm" id="gProtoTraits" value="${Util.escape((protoPers.traits || []).join(", "))}" /></div>
+                        <div class="col-md-6"><label class="form-label small">弱点（逗号分隔）</label>
+                            <input class="form-control form-control-sm" id="gProtoWeak" value="${Util.escape((protoPers.weakness || []).join(", "))}" /></div>
+                    </div>
+                </div></div>
+            </div>
+
+            <!-- 原始 JSON -->
+            <div class="tab-pane fade" id="g-raw">
+                <div class="card shadow-sm"><div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <span class="text-muted small">直接编辑 JSON（保存时会校验结构）</span>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="App.refreshGenreRaw()">
+                            <i class="fas fa-rotate me-1"></i>从上方表单同步
                         </button>
                     </div>
-                </div>
+                    <textarea class="form-control reader-editor" id="gRawJson" rows="22">${Util.escape(JSON.stringify(g, null, 2))}</textarea>
+                </div></div>
             </div>
-        </div>
-    `;
-    
-    container.innerHTML = detailHtml;
+        </div>`;
+}
+
+/* ============================================================
+ * App 操作
+ * ============================================================ */
+const App = {
+    /* 统一跳转入口：先改 hash，再强制 route() */
+    go(hash) {
+        if (location.hash === hash) {
+            // 同 hash 不会触发 hashchange，手动调
+            route();
+        } else {
+            location.hash = hash;
+        }
+    },
+
+    /* ----------- 创建小说 ----------- */
+    async openCreateModal() {
+        if (State.genres.length === 0) {
+            try { State.genres = await Util.get("/genres"); } catch (_) {}
+        }
+        document.getElementById("genrePicker").innerHTML = State.genres.map(g => `
+            <div class="col-md-4">
+                <div class="genre-pick" data-name="${g.name}" onclick="App.pickGenre('${g.name}')">
+                    <div class="genre-pick-name">${Util.escape(g.display_name)}</div>
+                    <div class="genre-pick-desc">${Util.escape(g.one_liner || "")}</div>
+                </div>
+            </div>`).join("");
+        const m = bootstrap.Modal.getOrCreateInstance(document.getElementById("createModal"));
+        m.show();
+    },
+    pickGenre(name) {
+        document.querySelectorAll(".genre-pick").forEach(el => el.classList.remove("active"));
+        const el = document.querySelector(`.genre-pick[data-name="${name}"]`);
+        if (el) el.classList.add("active");
+    },
+    async submitCreate() {
+        const sel = document.querySelector(".genre-pick.active");
+        if (!sel) return Util.toast("请选择一个题材包", "warn");
+        const payload = {
+            genre: sel.dataset.name,
+            title: document.getElementById("newTitle").value.trim(),
+            protagonist: document.getElementById("newProtagonist").value.trim(),
+            total_chapters: parseInt(document.getElementById("newTotal").value || "30"),
+            also_storyline: document.getElementById("newAlsoStoryline").checked,
+            extra: document.getElementById("newExtra").value.trim(),
+        };
+        if (!payload.title || !payload.protagonist) return Util.toast("标题与主角必填", "warn");
+        try {
+            Util.showLoading("创建中…");
+            const r = await Util.post("/novels", payload);
+            bootstrap.Modal.getInstance(document.getElementById("createModal")).hide();
+            Util.toast("已开始创建，正在后台跑 LLM…", "success");
+            App.startPolling(r.task_id, () => {
+                Util.toast(`小说《${payload.title}》创建完成`, "success");
+                if (r.novel_id) App.go(`#/novel/${r.novel_id}`);
+                else App.go("#/");
+            });
+        } catch (e) { Util.toast(e.message, "error", 6000); }
+        finally { Util.hideLoading(); }
+    },
+
+    async deleteNovel(id) {
+        if (!confirm("确定删除这本小说？所有数据将被永久移除。")) return;
+        try {
+            await Util.del(`/novels/${id}`);
+            Util.toast("已删除", "success");
+            App.go("#/");
+        } catch (e) { Util.toast(e.message, "error"); }
+    },
+
+    /* ----------- 单本工作流上的操作 ----------- */
+    async runCanon() {
+        if (!State.currentNovelId) return;
+        try {
+            Util.showLoading("校验中…");
+            await Util.post(`/novels/${State.currentNovelId}/canon`);
+            Util.toast("校验完成", "success");
+            await loadCanonPane(State.currentNovelId);
+        } catch (e) { Util.toast(e.message, "error"); }
+        finally { Util.hideLoading(); }
+    },
+    async runBlueprint() {
+        if (!State.currentNovelId) return;
+        if (State.currentNovel && State.currentNovel.stage && State.currentNovel.stage.blueprint) {
+            if (!confirm("当前已有蓝图，重新生成会覆盖现有 blueprint.json，确定？")) return;
+        }
+        try {
+            const r = await Util.post(`/novels/${State.currentNovelId}/blueprint`);
+            Util.toast("蓝图生成已启动…", "success");
+            App.startPolling(r.task_id, async () => {
+                Util.toast("蓝图生成完成", "success");
+                App.go(`#/novel/${State.currentNovelId}`);
+            });
+        } catch (e) { Util.toast(e.message, "error"); }
+    },
+    async startGenerateChapters() {
+        if (!State.currentNovelId) return;
+        const start = parseInt(document.getElementById("genStart").value);
+        const end   = parseInt(document.getElementById("genEnd").value);
+        const words = parseInt(document.getElementById("genWords").value);
+        if (!(start >= 1 && end >= start && words >= 500)) return Util.toast("参数不合法", "warn");
+        if (end - start + 1 > 10 && !confirm(`将一次生成 ${end - start + 1} 章，预计耗时较长，继续？`)) return;
+        try {
+            const r = await Util.post(`/novels/${State.currentNovelId}/chapters/generate`, {
+                start, end, target_words: words, no_dynamic_state: false,
+            });
+            Util.toast(`已启动生成（共 ${end - start + 1} 章），可在右上角"任务"查看进度`, "success", 6000);
+            App.startPolling(r.task_id, async () => {
+                Util.toast("批量生成完成", "success");
+                App.go(`#/novel/${State.currentNovelId}`);
+            });
+        } catch (e) { Util.toast(e.message, "error"); }
+    },
+    async runAudit() {
+        const id = State.currentNovelId || parseHash().novelId;
+        if (!id) return;
+        try {
+            Util.showLoading("审计中…");
+            await Util.post(`/novels/${id}/audit`);
+            Util.toast("审计完成", "success");
+            App.go(`#/novel/${id}/audit`);
+        } catch (e) { Util.toast(e.message, "error"); }
+        finally { Util.hideLoading(); }
+    },
+
+    /* ----------- 编辑入口（快捷弹框 → 跳到编辑大页） ----------- */
+    openMetaEditor()      { if (State.currentNovelId) App.go(`#/novel/${State.currentNovelId}/edit`); },
+    openCharsEditor()     { if (State.currentNovelId) App.go(`#/novel/${State.currentNovelId}/edit`); },
+    openStorylineEditor() { if (State.currentNovelId) App.go(`#/novel/${State.currentNovelId}/edit`); },
+
+    /* ----------- 编辑大页保存 ----------- */
+    async saveMetaTab() {
+        const id = State.currentNovelId; if (!id) return;
+        const payload = {
+            title: document.getElementById("metaTitle").value.trim(),
+            main_character_name: document.getElementById("metaProtag").value.trim(),
+            total_chapters_planned: parseInt(document.getElementById("metaTotal").value || "30"),
+            user_requirements: document.getElementById("metaExtra").value,
+        };
+        if (!payload.title) return Util.toast("标题不能为空", "warn");
+        try {
+            Util.showLoading("保存中…");
+            await Util.put(`/novels/${id}/metadata`, payload);
+            Util.toast("已保存基本信息", "success");
+            Util.flash("#tab-meta .card");
+        } catch (e) { Util.toast(e.message, "error"); }
+        finally { Util.hideLoading(); }
+    },
+
+    addSupChar() {
+        const list = document.getElementById("supList");
+        const idx = list.querySelectorAll(".sup-row").length;
+        if (list.querySelector(".text-muted")) list.innerHTML = "";
+        list.insertAdjacentHTML("beforeend", charSupRow({ basic_info: {} }, idx));
+    },
+    removeSupChar(idx) {
+        const row = document.querySelector(`.sup-row[data-sup-idx="${idx}"]`);
+        if (row) row.remove();
+    },
+    async saveCharsTab() {
+        const id = State.currentNovelId; if (!id) return;
+        // 收集主角
+        const main = { basic_info: {} };
+        document.querySelectorAll("[data-mfield]").forEach(el => {
+            main.basic_info[el.dataset.mfield] = el.value;
+        });
+        // 收集配角
+        const sup = [];
+        document.querySelectorAll(".sup-row").forEach(row => {
+            const s = { basic_info: {} };
+            row.querySelectorAll("[data-sfield]").forEach(el => { s.basic_info[el.dataset.sfield] = el.value; });
+            const role = row.querySelector("[data-srole]"); if (role) s.role = role.value;
+            const per  = row.querySelector("[data-spersonality]"); if (per && per.value) s.personality = per.value;
+            const rel  = row.querySelector("[data-srel]"); if (rel && rel.value) s.relationship_with_main = rel.value;
+            if ((s.basic_info.name || "").trim()) sup.push(s);
+        });
+        try {
+            Util.showLoading("保存中…");
+            await Util.put(`/novels/${id}/characters`, { main_character: main, supporting_characters: sup });
+            // 同步 main_character_name 到 metadata
+            if (main.basic_info.name) {
+                const supNames = sup.map(s => s.basic_info.name).filter(Boolean);
+                await Util.put(`/novels/${id}/metadata`, {
+                    main_character_name: main.basic_info.name,
+                    supporting_character_names: supNames,
+                });
+            }
+            Util.toast("已保存角色档案，建议重新跑 Canon 校验", "success", 5000);
+            Util.flash("#tab-chars .card");
+        } catch (e) { Util.toast(e.message, "error"); }
+        finally { Util.hideLoading(); }
+    },
+    async saveStorylineTab() {
+        const id = State.currentNovelId; if (!id) return;
+        try {
+            const cur = await Util.get(`/novels/${id}/storyline`);
+            const ov = cur.overall_storyline || {};
+            ov.main_goal = document.getElementById("stMainGoal").value;
+            ov.core_conflict = ov.core_conflict || {};
+            ov.core_conflict.external      = document.getElementById("stExt").value;
+            ov.core_conflict.internal      = document.getElementById("stInt").value;
+            ov.core_conflict.interpersonal = document.getElementById("stIntp").value;
+            ov.act1 = ov.act1 || {}; ov.act1.setup = document.getElementById("stAct1").value;
+            ov.act2 = ov.act2 || {}; ov.act2.midpoint_crisis = document.getElementById("stAct2").value;
+            ov.act3 = ov.act3 || {}; ov.act3.climax = document.getElementById("stAct3").value;
+            ov.themes = document.getElementById("stThemes").value.split("\n").map(s => s.trim()).filter(Boolean);
+            Util.showLoading("保存中…");
+            await Util.put(`/novels/${id}/storyline`, { overall_storyline: ov });
+            Util.toast("已保存 Storyline", "success");
+            Util.flash("#tab-story .card");
+        } catch (e) { Util.toast(e.message, "error"); }
+        finally { Util.hideLoading(); }
+    },
+
+    /* ----------- 章节编辑 ----------- */
+    toggleChapterEdit() {
+        const reader = document.getElementById("chReader");
+        const editor = document.getElementById("chEditor");
+        const btn = document.getElementById("chEditBtn");
+        const editing = editor.style.display !== "none";
+        if (editing) {
+            editor.style.display = "none";
+            reader.style.display = "block";
+            btn.innerHTML = `<i class="fas fa-pen me-1"></i>编辑`;
+        } else {
+            reader.style.display = "none";
+            editor.style.display = "block";
+            btn.innerHTML = `<i class="fas fa-eye me-1"></i>预览`;
+        }
+    },
+    async saveChapter(n) {
+        const id = State.currentNovelId; if (!id) return;
+        const title = document.getElementById("chEditTitle").value.trim();
+        const body  = document.getElementById("chEditBody").value;
+        if (!title || !body.trim()) return Util.toast("标题和正文都不能为空", "warn");
+        try {
+            Util.showLoading("保存中…");
+            const r = await Util.put(`/novels/${id}/chapters/${n}`, { title, body });
+            Util.toast(`已保存（${r.word_count} 字）`, "success");
+            App.go(`#/novel/${id}/chapter/${n}`);  // 刷新阅读器
+        } catch (e) { Util.toast(e.message, "error"); }
+        finally { Util.hideLoading(); }
+    },
+
+    /* ----------- 任务监控 ----------- */
+    startPolling(taskId, onDone) {
+        if (State.pollers[taskId]) return;
+        const id = setInterval(async () => {
+            try {
+                const t = await Util.get(`/tasks/${taskId}`);
+                App.refreshTaskBadge();
+                if (t.status === "succeeded" || t.status === "failed") {
+                    clearInterval(id);
+                    delete State.pollers[taskId];
+                    if (t.status === "succeeded") onDone && onDone(t);
+                    else Util.toast(`任务失败：${t.error || "未知错误"}`, "error", 8000);
+                }
+            } catch (_) {}
+        }, 2500);
+        State.pollers[taskId] = id;
+        App.refreshTaskBadge();
+    },
+    async refreshTaskBadge() {
+        try {
+            const tasks = await Util.get("/tasks");
+            const running = tasks.filter(t => t.status === "running" || t.status === "pending").length;
+            const badge = document.getElementById("navTaskBadge");
+            if (running > 0) {
+                badge.textContent = running;
+                badge.style.display = "inline-block";
+            } else {
+                badge.style.display = "none";
+            }
+        } catch (_) {}
+    },
+    async openTasksModal() {
+        const body = document.getElementById("tasksModalBody");
+        body.innerHTML = `<div class="text-muted">加载中…</div>`;
+        bootstrap.Modal.getOrCreateInstance(document.getElementById("tasksModal")).show();
+        try {
+            const tasks = await Util.get("/tasks");
+            if (tasks.length === 0) {
+                body.innerHTML = `<div class="text-muted text-center py-4">暂无任务记录</div>`;
+                return;
+            }
+            const stCol = { pending: "secondary", running: "primary", succeeded: "success", failed: "danger" };
+            body.innerHTML = tasks.map(t => {
+                const p = t.progress || {};
+                const pct = p.total ? Math.round((p.current / p.total) * 100) : 0;
+                return `
+                <div class="task-row">
+                    <div class="d-flex justify-content-between mb-1">
+                        <span><span class="badge bg-${stCol[t.status] || "secondary"} me-2">${t.status}</span>
+                            <b>${Util.escape(t.type)}</b>
+                            ${t.novel_id ? `· <span class="text-muted small">${t.novel_id.slice(0, 8)}…</span>` : ""}
+                        </span>
+                        <span class="text-muted small">${Util.fmtTs(t.started_at)}</span>
+                    </div>
+                    <div class="progress mb-1" style="height:6px">
+                        <div class="progress-bar" style="width:${pct}%"></div>
+                    </div>
+                    <div class="small text-muted">${Util.escape(p.msg || "")} ${p.total ? `(${p.current}/${p.total})` : ""}</div>
+                </div>`;
+            }).join("");
+        } catch (e) {
+            body.innerHTML = `<div class="text-danger">${Util.escape(e.message)}</div>`;
+        }
+    },
 };
 
-// 开始新章节续写
-window.startNewChapterContinuation = () => {
-    // 显示续写需求表单
-    const continuationForm = document.getElementById('continuation-form');
-    if (continuationForm) {
-        continuationForm.style.display = 'block';
-    }
-    
-    // 隐藏小说详情
-    const novelDetail = document.querySelector('.novel-detail-for-continuation');
-    if (novelDetail) {
-        novelDetail.style.display = 'none';
+/* ============================================================
+ * v2.2 新增 App 方法：主页过滤 / 卷展开 / 阅读器升级 / 吸底任务条
+ * ============================================================ */
+App.applyHomeFilter = function () {
+    const q = document.getElementById("homeQ");
+    const sort = document.getElementById("homeSort");
+    const stage = document.getElementById("homeStage");
+    if (q) State.homeFilter.q = q.value;
+    if (sort) State.homeFilter.sort = sort.value;
+    if (stage) State.homeFilter.stage = stage.value;
+    renderNovelGrid();
+};
+App.clearHomeFilter = function () {
+    State.homeFilter = { q: "", sort: "updated_desc", stage: "all" };
+    App.go("#/");
+};
+
+/* ----------- 题材库 ----------- */
+App.openGenerateGenreModal = function () {
+    document.getElementById("genGenreDesc").value = "";
+    document.getElementById("genGenreName").value = "";
+    bootstrap.Modal.getOrCreateInstance(document.getElementById("genGenreModal")).show();
+};
+/* 创建小说 modal 里点"LLM 造一个新题材"——先关掉创建 modal 再打开生成 modal */
+App.openGenerateGenreModalFromCreate = function () {
+    const cm = bootstrap.Modal.getInstance(document.getElementById("createModal"));
+    if (cm) cm.hide();
+    setTimeout(() => App.openGenerateGenreModal(), 300);
+};
+App.submitGenerateGenre = async function () {
+    const description = document.getElementById("genGenreDesc").value.trim();
+    const name = document.getElementById("genGenreName").value.trim();
+    if (!description) return Util.toast("请填写题材描述", "warn");
+    try {
+        const r = await Util.post("/genres/generate", { description, name });
+        bootstrap.Modal.getInstance(document.getElementById("genGenreModal")).hide();
+        Util.toast("题材生成已启动…可在底部任务条查看进度", "success");
+        App.startPolling(r.task_id, async (t) => {
+            const genre = (t.result || {}).genre;
+            if (genre) {
+                Util.toast(`题材 ${genre.display_name || genre.name} 已生成，预览可保存`, "success", 5000);
+                State._llmPreset = genre;
+                App.go("#/genres/new");
+            }
+        });
+    } catch (e) { Util.toast(e.message, "error"); }
+};
+
+App.deleteGenre = async function (name) {
+    if (!confirm(`确定删除题材『${name}』？正被小说使用的题材无法删除。`)) return;
+    try {
+        await Util.del(`/genres/${encodeURIComponent(name)}`);
+        Util.toast("已删除", "success");
+        State.genres = [];
+        App.go("#/genres");
+    } catch (e) {
+        Util.toast(e.message || "删除失败", "error", 6000);
     }
 };
 
-// 切换显示所有章节
-window.toggleAllChapters = (novelId, totalChapters) => {
-    const allChaptersDiv = document.getElementById(`all-chapters-${novelId}`);
-    const toggleBtn = document.getElementById(`toggle-chapters-btn-${novelId}`);
-    
-    if (!allChaptersDiv || !toggleBtn) {
-        console.error('找不到章节展开/收起元素');
-        return;
+App.refreshGenreRaw = function () {
+    const g = App._collectGenreFromForm();
+    if (!g) return;
+    document.getElementById("gRawJson").value = JSON.stringify(g, null, 2);
+    Util.toast("已从上方表单同步到 JSON", "info", 1800);
+};
+
+App._collectGenreFromForm = function () {
+    const splitLines = id => (document.getElementById(id).value || "")
+        .split("\n").map(s => s.trim()).filter(Boolean);
+    const splitCsv = id => (document.getElementById(id).value || "")
+        .split(/[,，]/).map(s => s.trim()).filter(Boolean);
+    const tags = {};
+    document.querySelectorAll("[data-gtag]").forEach(el => {
+        const cat = el.dataset.gtag;
+        const arr = (el.value || "").split(/[,，]/).map(s => s.trim()).filter(Boolean);
+        tags[cat] = arr;
+    });
+    return {
+        name: document.getElementById("gName").value.trim(),
+        display_name: document.getElementById("gDisplay").value.trim(),
+        one_liner: document.getElementById("gOne").value.trim(),
+        style_guide: document.getElementById("gStyle").value,
+        allowed_elements: splitLines("gAllowed"),
+        forbidden_elements: splitLines("gForbidden"),
+        banned_phrases: splitLines("gBanned"),
+        default_tags: tags,
+        default_world_setting: {
+            era: document.getElementById("gWsEra").value.trim(),
+            world_archetype: document.getElementById("gWsArch").value.trim(),
+            power_system: document.getElementById("gWsPower").value.trim(),
+            tech_baseline: document.getElementById("gWsTech").value.trim(),
+            key_locations: splitLines("gWsLoc"),
+        },
+        default_themes: splitLines("gThemes"),
+        spec_template: {
+            user_requirements_template: document.getElementById("gUrTpl").value,
+            protagonist_skeleton: {
+                basic_info: {
+                    age: parseInt(document.getElementById("gProtoAge").value || "0") || undefined,
+                    gender: document.getElementById("gProtoGender").value,
+                    occupation: document.getElementById("gProtoOcc").value.trim(),
+                    background: document.getElementById("gProtoBg").value,
+                },
+                personality: {
+                    traits: splitCsv("gProtoTraits"),
+                    weakness: splitCsv("gProtoWeak"),
+                },
+            },
+            supporting_skeletons: ((State._editingGenre || {}).spec_template || {}).supporting_skeletons || [],
+        },
+    };
+};
+
+App.saveGenre = async function () {
+    const isNew = !!State._editingGenreIsNew;
+    let payload;
+    const rawTab = document.getElementById("gRawJson");
+    const rawTxt = rawTab && rawTab.value ? rawTab.value.trim() : "";
+    if (rawTxt) {
+        try {
+            const parsed = JSON.parse(rawTxt);
+            if (JSON.stringify(parsed) !== JSON.stringify(State._editingGenre)) {
+                payload = parsed;
+            }
+        } catch (e) {
+            return Util.toast(`原始 JSON 格式错误：${e.message}`, "error");
+        }
     }
-    
-    const isExpanded = allChaptersDiv.style.display !== 'none';
-    
-    if (isExpanded) {
-        // 收起章节
-        allChaptersDiv.style.display = 'none';
-        toggleBtn.innerHTML = `<i class="fas fa-chevron-down me-1"></i>还有 ${totalChapters - 3} 个章节...`;
-        toggleBtn.classList.remove('btn-outline-primary');
-        toggleBtn.classList.add('btn-outline-secondary');
+    if (!payload) payload = App._collectGenreFromForm();
+    if (!payload) return;
+
+    const name = (payload.name || "").trim().toLowerCase();
+    if (!/^[a-z0-9_]{2,32}$/.test(name)) {
+        return Util.toast("name 只能包含小写字母 / 数字 / 下划线，长度 2-32", "warn", 5000);
+    }
+    payload.name = name;
+
+    try {
+        Util.showLoading("保存中…");
+        if (isNew) {
+            await Util.post("/genres", payload);
+            Util.toast("题材已新建", "success");
+        } else {
+            await Util.put(`/genres/${encodeURIComponent(name)}`, payload);
+            Util.toast("题材已更新", "success");
+        }
+        State.genres = [];
+        App.go(`#/genres/${encodeURIComponent(name)}`);
+    } catch (e) { Util.toast(e.message, "error", 6000); }
+    finally { Util.hideLoading(); }
+};
+
+App.toggleVolumeDetail = function (volIdx) {
+    if (State.bp.expandedVolume === volIdx) {
+        State.bp.expandedVolume = null;
     } else {
-        // 展开章节
-        allChaptersDiv.style.display = 'block';
-        toggleBtn.innerHTML = `<i class="fas fa-chevron-up me-1"></i>收起章节`;
-        toggleBtn.classList.remove('btn-outline-secondary');
-        toggleBtn.classList.add('btn-outline-primary');
+        State.bp.expandedVolume = volIdx;
     }
+    if (State.currentNovelId) loadBlueprintPane(State.currentNovelId);
 };
 
-// 快速续写完成后刷新相关数据
-const refreshNovelDataAfterCompletion = async (novelId, chapterNumber = null) => {
-    try {
-        console.log('开始刷新小说数据...');
-        
-        // 1. 刷新小说列表
-        const novelsResponse = await Utils.apiRequest('/novels');
-        if (novelsResponse.success) {
-            // 更新AppState中的小说列表
-            AppState.novels = novelsResponse.data;
-            console.log('小说列表已刷新');
-        }
-        
-        // 2. 如果当前在小说详情页面，刷新章节信息
-        const currentPage = document.querySelector('.page.active');
-        if (currentPage && currentPage.id === 'novel-selection-page') {
-            console.log('当前在小说选择页面，刷新章节信息...');
-            
-            // 重新加载小说详情
-            if (AppState.selectedNovelId === novelId) {
-                await loadNovelDetailsForContinuation(novelId);
-            }
-        }
-        
-        // 3. 如果当前在续写工作流页面，刷新工作流状态
-        if (currentPage && currentPage.id === 'continuation-workflow-page') {
-            console.log('当前在续写工作流页面，刷新工作流状态...');
-            
-            if (AppState.currentNovelId === novelId) {
-                await ContinuationManager.loadContinuationWorkflow(novelId);
-            }
-        }
-        
-        // 4. 如果当前在快速续写进度页面，刷新进度信息
-        if (currentPage && currentPage.id === 'quick-continuation-progress-page') {
-            console.log('当前在快速续写进度页面，刷新进度信息...');
-            
-            if (AppState.currentNovelId === novelId) {
-                // 重新加载进度信息
-                await QuickContinuationManager.loadProgress(novelId);
-            }
-        }
-        
-        // 4. 显示完成提示
-        if (chapterNumber) {
-            Utils.showMessage(`第${chapterNumber}章续写完成！数据已自动刷新`, 'success');
-        } else {
-            Utils.showMessage('快速续写完成！数据已自动刷新', 'success');
-        }
-        
-        console.log('小说数据刷新完成');
-        
-    } catch (error) {
-        console.error('刷新小说数据失败:', error);
-        Utils.showMessage('快速续写完成，但数据刷新失败，请手动刷新页面', 'warning');
+App.readerFont = function (delta) {
+    if (delta === 0) {
+        State.reader.fontSize = 17;
+    } else {
+        State.reader.fontSize = Math.max(13, Math.min(28, State.reader.fontSize + delta));
     }
+    const card = document.getElementById("readerCard");
+    if (card) card.style.fontSize = State.reader.fontSize + "px";
+    const lbl = document.getElementById("readerFontLabel");
+    if (lbl) lbl.textContent = State.reader.fontSize;
+    try {
+        localStorage.setItem("inkai_reader_prefs", JSON.stringify({ fontSize: State.reader.fontSize }));
+    } catch (_) {}
 };
 
-// 加载小说详情用于续写选择（刷新用）
-const loadNovelDetailsForContinuation = async (novelId) => {
-    try {
-        // 获取小说元数据
-        const metadataResponse = await Utils.apiRequest(`/novels/${novelId}/data/metadata`);
-        if (!metadataResponse.success) {
-            throw new Error('获取小说元数据失败');
-        }
-        
-        // 获取章节列表
-        const chaptersResponse = await Utils.apiRequest(`/novels/${novelId}/chapters`);
-        if (!chaptersResponse.success) {
-            throw new Error('获取章节列表失败');
-        }
-        
-        const novel = metadataResponse.data;
-        const chapters = chaptersResponse.data;
-        
-        // 重新显示小说详情
-        showNovelDetailForContinuation(novel, chapters);
-        
-    } catch (error) {
-        console.error('加载小说详情失败:', error);
-        Utils.showMessage('刷新小说详情失败: ' + error.message, 'danger');
-    }
+App.toggleFullscreen = function () {
+    State.reader.fullscreen = !State.reader.fullscreen;
+    document.body.classList.toggle("reader-fullscreen", State.reader.fullscreen);
+    const ic = document.getElementById("fullscreenIcon");
+    if (ic) ic.className = State.reader.fullscreen ? "fas fa-compress" : "fas fa-expand";
 };
 
-// 显示章节选择用于编辑
-window.showChapterSelectionForEdit = async () => {
+/* ----------- 吸底任务条（dock） ----------- */
+App.renderTaskDock = async function () {
     try {
-        console.log('showChapterSelectionForEdit 被调用');
-        console.log('AppState.selectedNovelId:', AppState.selectedNovelId);
-        
-        if (!AppState.selectedNovelId) {
-            Utils.showMessage('没有选择小说，请重新选择', 'warning');
+        const tasks = await Util.get("/tasks");
+        const running = tasks.filter(t => t.status === "running" || t.status === "pending");
+        const dock = document.getElementById("taskDock");
+        const inner = document.getElementById("taskDockInner");
+        if (running.length === 0) {
+            dock.style.display = "none";
             return;
         }
-        
-        Utils.showLoading('正在加载章节列表...');
-        
-        // 获取章节列表
-        const chaptersResponse = await Utils.apiRequest(`/novels/${AppState.selectedNovelId}/chapters`);
-        console.log('章节列表响应:', chaptersResponse);
-        
-        if (!chaptersResponse.success) {
-            throw new Error('获取章节列表失败');
-        }
-        
-        const chapters = chaptersResponse.data;
-        console.log('章节数据:', chapters);
-        
-        if (!chapters || chapters.length === 0) {
-            Utils.showMessage('该小说还没有章节', 'info');
-            return;
-        }
-        
-        // 显示章节选择界面
-        displayChapterSelectionForEdit(chapters);
-        
-    } catch (error) {
-        console.error('showChapterSelectionForEdit 错误:', error);
-        Utils.showMessage('加载章节列表失败: ' + error.message, 'danger');
-    } finally {
-        Utils.hideLoading();
-    }
-};
-
-// 显示章节选择界面用于编辑
-const displayChapterSelectionForEdit = (chapters) => {
-    const container = document.getElementById('novel-selection');
-    
-    const selectionHtml = `
-        <div class="chapter-edit-selection">
-            <div class="card border-0 shadow-sm mb-4">
-                <div class="card-header bg-warning text-white">
-                    <h5 class="mb-0">
-                        <i class="fas fa-edit me-2"></i>
-                        选择要修改的章节
-                    </h5>
-                </div>
-                <div class="card-body">
-                    <div class="chapters-list">
-                        ${chapters.map(chapter => `
-                            <div class="chapter-item d-flex justify-content-between align-items-center p-3 border rounded mb-3">
-                                <div class="chapter-info">
-                                    <h6 class="mb-1">${chapter.title || `第${chapter.chapter_number}章`}</h6>
-                                    <div class="chapter-meta">
-                                        <span class="badge bg-secondary me-2">${chapter.word_count || 0}字</span>
-                                        <small class="text-muted">${Utils.formatDate(chapter.created_at)}</small>
-                                    </div>
-                                </div>
-                                <div class="chapter-actions">
-                                    <button class="btn btn-outline-primary btn-sm me-2" onclick="viewChapterInModal('${AppState.selectedNovelId}', ${chapter.chapter_number})" title="查看章节内容">
-                                        <i class="fas fa-eye"></i> 查看
-                                    </button>
-                                    <button class="btn btn-warning btn-sm me-2" onclick="editChapter('${AppState.selectedNovelId}', ${chapter.chapter_number})" title="编辑章节">
-                                        <i class="fas fa-edit"></i> 编辑
-                                    </button>
-                                    <button class="btn btn-danger btn-sm" onclick="deleteChapter('${AppState.selectedNovelId}', ${chapter.chapter_number}, '${chapter.title || `第${chapter.chapter_number}章`}')" title="删除章节">
-                                        <i class="fas fa-trash"></i> 删除
-                                    </button>
-                                </div>
-                            </div>
-                        `).join('')}
-                    </div>
-                    
-                    <div class="mt-4 text-center">
-                        <button type="button" class="btn btn-outline-secondary" onclick="selectNovel('${AppState.selectedNovelId}')">
-                            <i class="fas fa-arrow-left me-2"></i>返回小说详情
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    `;
-    
-    container.innerHTML = selectionHtml;
-};
-
-// 编辑章节
-window.editChapter = async (novelId, chapterNumber) => {
-    try {
-        Utils.showMessage('章节编辑功能正在开发中...', 'info');
-        // TODO: 实现章节编辑功能
-    } catch (error) {
-        Utils.showMessage('编辑章节失败: ' + error.message, 'danger');
-    }
-};
-
-// 开始内容优化
-window.startContentOptimization = () => {
-    // 切换到创作工作流程页面，让用户优化基础内容
-    Navigation.showCreationWorkflow(AppState.selectedNovelId);
-};
-
-
-window.createNovel = async () => {
-    const title = document.getElementById('novel-title').value.trim();
-    const requirements = document.getElementById('novel-requirements').value.trim();
-    
-    // 输入验证
-    if (!requirements) {
-        Utils.showMessage('请输入创作需求', 'warning');
-        document.getElementById('novel-requirements').focus();
-        return;
-    }
-    
-    if (requirements.length < 10) {
-        Utils.showMessage('创作需求至少需要10个字符', 'warning');
-        document.getElementById('novel-requirements').focus();
-        return;
-    }
-    
-    if (requirements.length > 2000) {
-        Utils.showMessage('创作需求不能超过2000个字符', 'warning');
-        document.getElementById('novel-requirements').focus();
-        return;
-    }
-    
-    if (title && title.length > 100) {
-        Utils.showMessage('小说标题不能超过100个字符', 'warning');
-        document.getElementById('novel-title').focus();
-        return;
-    }
-    
-    // 检查是否包含敏感词（简单检查）
-    const sensitiveWords = ['暴力', '色情', '政治'];
-    const hasSensitiveWord = sensitiveWords.some(word => requirements.includes(word));
-    if (hasSensitiveWord) {
-        Utils.showMessage('创作需求包含不当内容，请修改后重试', 'warning');
-        return;
-    }
-    
-    await NovelManager.createNovel(title, requirements);
-};
-
-window.startContinuation = async () => {
-    const requirements = document.getElementById('continuation-requirements').value;
-    
-    if (!AppState.selectedNovelId) {
-        Utils.showMessage('请先选择要续写的小说', 'warning');
-        return;
-    }
-    
-    await NovelManager.startContinuation(AppState.selectedNovelId, requirements);
-};
-
-window.startContinuationFromList = async (novelId) => {
-    AppState.selectedNovelId = novelId;
-    await NovelManager.startContinuation(novelId, '');
-};
-
-// 开始写下一章
-window.startNextChapter = async () => {
-    if (!AppState.currentNovelId) {
-        Utils.showMessage('没有活跃的续写项目', 'warning');
-        return;
-    }
-    
-    try {
-        Utils.showLoading('正在启动下一章续写...');
-        
-        // 启动下一章续写，默认重置缓存（因为是新的一章）
-        const response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/continuation`, {
-            method: 'POST',
-            body: JSON.stringify({
-                user_requirements: '',
-                reset_cache: true  // 新的一章需要重置
-            })
-        });
-        
-        if (response.success) {
-            Utils.showMessage('下一章续写已启动！', 'success');
-            // 重新加载续写工作流程
-            await ContinuationManager.loadContinuationWorkflow(AppState.currentNovelId);
-        }
-    } catch (error) {
-        Utils.showMessage('启动下一章续写失败: ' + error.message, 'danger');
-    } finally {
-        Utils.hideLoading();
-    }
-};
-
-window.executeStep = async (stepName) => {
-    if (!AppState.currentNovelId) {
-        Utils.showMessage('没有活跃的小说项目', 'warning');
-        return;
-    }
-    
-    await WorkflowManager.executeStep(stepName, AppState.currentNovelId);
-};
-
-window.executeContinuationStep = async (stepName) => {
-    if (!AppState.currentNovelId) {
-        Utils.showMessage('没有活跃的续写项目', 'warning');
-        return;
-    }
-    
-    await ContinuationManager.executeContinuationStep(stepName, AppState.currentNovelId);
-};
-
-window.loadNovelList = NovelManager.loadNovelList;
-window.loadCreationWorkflow = WorkflowManager.loadCreationWorkflow;
-window.loadContinuationWorkflow = ContinuationManager.loadContinuationWorkflow;
-
-// 步骤详情相关函数
-window.toggleStepDetails = StepDetailsManager.toggleStepDetails;
-
-// 重新生成步骤
-window.regenerateStep = async (stepKey) => {
-    if (!AppState.currentNovelId) {
-        Utils.showMessage('没有活跃的小说项目', 'warning');
-        return;
-    }
-    
-    try {
-        Utils.showLoading(`正在重新生成${stepKey}...`);
-        
-        // 检查是否在续写模式
-        const isContinuationMode = AppState.continuationData && AppState.continuationData.is_continuation;
-        
-        // 根据步骤类型和模式调用相应的API
-        switch (stepKey) {
-            case 'tag_selection':
-                await Utils.apiRequest(`/novels/${AppState.currentNovelId}/tags`, {
-                    method: 'POST'
-                });
-                break;
-            case 'character_creation':
-                await Utils.apiRequest(`/novels/${AppState.currentNovelId}/characters`, {
-                    method: 'POST'
-                });
-                break;
-            case 'storyline_generation':
-                if (isContinuationMode) {
-                    await Utils.apiRequest(`/novels/${AppState.currentNovelId}/continuation/storyline`, {
-                        method: 'POST'
-                    });
-                } else {
-                    await Utils.apiRequest(`/novels/${AppState.currentNovelId}/storyline`, {
-                        method: 'POST'
-                    });
-                }
-                break;
-            case 'quality_assessment':
-                if (isContinuationMode) {
-                    await Utils.apiRequest(`/novels/${AppState.currentNovelId}/continuation/quality`, {
-                        method: 'POST',
-                        body: JSON.stringify({ content_type: 'storyline' })
-                    });
-                }
-                break;
-            case 'storyline_improvement':
-                if (isContinuationMode) {
-                    await Utils.apiRequest(`/novels/${AppState.currentNovelId}/continuation/storyline/improve`, {
-                        method: 'POST'
-                    });
-                }
-                break;
-            case 'knowledge_graph_creation':
-                await Utils.apiRequest(`/novels/${AppState.currentNovelId}/knowledge-graph`, {
-                    method: 'POST'
-                });
-                break;
-            case 'chapter_writing':
-                if (isContinuationMode) {
-                    await Utils.apiRequest(`/novels/${AppState.currentNovelId}/continuation/chapter`, {
-                        method: 'POST'
-                    });
-                } else {
-                    await Utils.apiRequest(`/novels/${AppState.currentNovelId}/chapters`, {
-                        method: 'POST'
-                    });
-                }
-                break;
-            case 'chapter_quality_assessment':
-                if (isContinuationMode) {
-                    await Utils.apiRequest(`/novels/${AppState.currentNovelId}/continuation/quality`, {
-                        method: 'POST',
-                        body: JSON.stringify({ content_type: 'story' })
-                    });
-                }
-                break;
-            case 'content_improvement':
-                if (isContinuationMode) {
-                    await Utils.apiRequest(`/novels/${AppState.currentNovelId}/continuation/chapter/improve`, {
-                        method: 'POST',
-                        body: JSON.stringify({ suggestions: [] })
-                    });
-                }
-                break;
-            case 'chapter_save':
-                if (isContinuationMode) {
-                    await Utils.apiRequest(`/novels/${AppState.currentNovelId}/continuation/save`, {
-                        method: 'POST'
-                    });
-                }
-                break;
-            default:
-                throw new Error('未知的步骤: ' + stepKey);
-        }
-        
-        Utils.showMessage(`${stepKey}重新生成成功！`, 'success');
-        
-        // 重新加载工作流程状态
-        if (isContinuationMode) {
-            await ContinuationManager.loadContinuationWorkflow(AppState.currentNovelId);
-        } else {
-            await WorkflowManager.loadCreationWorkflow(AppState.currentNovelId);
-        }
-        
-    } catch (error) {
-        Utils.showMessage(`重新生成${stepKey}失败: ` + error.message, 'danger');
-    } finally {
-        Utils.hideLoading();
-    }
-};
-
-// 改进步骤
-window.improveStep = async (stepKey) => {
-    if (!AppState.currentNovelId) {
-        Utils.showMessage('没有活跃的小说项目', 'warning');
-        return;
-    }
-    
-    // 显示改进对话框
-    const improvementType = stepKey === 'character_creation' ? 'characters' : 'storyline';
-    showImprovementDialog(improvementType);
-};
-
-// 显示改进对话框
-const showImprovementDialog = (type) => {
-    const modalHtml = `
-        <div class="modal fade" id="improvementModal" tabindex="-1">
-            <div class="modal-dialog modal-lg">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h5 class="modal-title">
-                            <i class="fas fa-magic me-2"></i>
-                            改进${type === 'characters' ? '人物设定' : '故事线'}
-                        </h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                    </div>
-                    <div class="modal-body">
-                        <div class="mb-3">
-                            <label for="improvement-suggestions" class="form-label">
-                                改进建议（可选，留空将使用AI自动分析）
-                            </label>
-                            <textarea class="form-control" id="improvement-suggestions" rows="4" 
-                                      placeholder="请输入具体的改进建议，例如：人物性格更加立体，增加内心冲突等"></textarea>
+        dock.style.display = "block";
+        inner.innerHTML = running.map(t => {
+            const p = t.progress || {};
+            const pct = p.total ? Math.round((p.current / p.total) * 100) : 0;
+            const typeLabel = {
+                create_novel: "创建小说",
+                generate_blueprint: "生成蓝图",
+                generate_chapters: "生成章节",
+            }[t.type] || t.type;
+            return `
+                <div class="task-dock-row">
+                    <div class="task-dock-icon"><i class="fas fa-cog fa-spin"></i></div>
+                    <div class="task-dock-meta flex-grow-1">
+                        <div class="d-flex justify-content-between align-items-center mb-1">
+                            <span><b>${Util.escape(typeLabel)}</b>
+                                ${t.novel_id ? `<span class="text-muted small ms-1">${t.novel_id.slice(0, 8)}…</span>` : ""}
+                            </span>
+                            <span class="small text-muted">${pct}%${p.total ? ` (${p.current}/${p.total})` : ""}</span>
                         </div>
-                        <div class="alert alert-info">
-                            <i class="fas fa-info-circle me-2"></i>
-                            如果不填写改进建议，系统将自动分析当前内容并提供改进方案。
+                        <div class="progress" style="height:5px">
+                            <div class="progress-bar bg-primary" style="width:${pct}%"></div>
                         </div>
+                        <div class="small text-muted mt-1">${Util.escape(p.msg || "")}</div>
                     </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                        <button type="button" class="btn btn-primary" onclick="confirmImprovement('${type}')">
-                            <i class="fas fa-magic me-2"></i>开始改进
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    `;
-    
-    // 移除现有模态框
-    const existingModal = document.getElementById('improvementModal');
-    if (existingModal) {
-        existingModal.remove();
-    }
-    
-    // 添加新模态框
-    document.body.insertAdjacentHTML('beforeend', modalHtml);
-    
-    // 显示模态框
-    const modal = new bootstrap.Modal(document.getElementById('improvementModal'));
-    modal.show();
+                    ${t.novel_id ? `
+                    <button class="btn btn-sm btn-outline-light" onclick="App.go('#/novel/${t.novel_id}')" title="去对应小说">
+                        <i class="fas fa-arrow-right"></i>
+                    </button>` : ""}
+                </div>`;
+        }).join("");
+        // 同时刷新 navbar 徽章
+        const badge = document.getElementById("navTaskBadge");
+        badge.textContent = running.length;
+        badge.style.display = "inline-block";
+    } catch (_) {}
 };
 
-// 确认改进
-window.confirmImprovement = async (type) => {
-    const suggestions = document.getElementById('improvement-suggestions').value.trim();
-    
-    try {
-        Utils.showLoading(`正在改进${type}...`);
-        
-        // 关闭模态框
-        const modal = bootstrap.Modal.getInstance(document.getElementById('improvementModal'));
-        modal.hide();
-        
-        // 调用改进API
-        const suggestionsArray = suggestions ? [suggestions] : [];
-        await WorkflowManager.improveContent(type, AppState.currentNovelId, suggestionsArray);
-        
-    } catch (error) {
-        Utils.showMessage(`改进${type}失败: ` + error.message, 'danger');
-    } finally {
-        Utils.hideLoading();
-    }
-};
-
-// 查看完整章节
-window.viewFullChapter = async (chapterNumber) => {
-    try {
-        const response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/chapters`);
-        
-        if (response.success) {
-            const chapters = response.data;
-            const chapter = chapters.find(ch => ch.chapter_number == chapterNumber);
-            
-            if (chapter) {
-                showChapterModal(chapter);
-            }
-        }
-    } catch (error) {
-        Utils.showMessage('加载章节失败: ' + error.message, 'danger');
-    }
-};
-
-// 显示续写章节模态框
-window.showContinuationChapterModal = async (novelId) => {
-    try {
-        Utils.showLoading('正在加载章节内容...');
-        
-        // 优先从已保存的章节文件中获取数据（历史记录）
-        let chapter = null;
-        const chaptersResponse = await Utils.apiRequest(`/novels/${novelId}/chapters`);
-        if (chaptersResponse.success && chaptersResponse.data.length > 0) {
-            // 获取最新的章节（续写章节）
-            chapter = chaptersResponse.data[chaptersResponse.data.length - 1];
-        }
-        
-        // 如果已保存的章节中没有数据，再尝试从缓存中获取
-        if (!chapter) {
-            const continuationResponse = await Utils.apiRequest(`/novels/${novelId}/continuation-status`);
-            if (continuationResponse.success && continuationResponse.data.continuation_state) {
-                chapter = continuationResponse.data.continuation_state.next_chapter_content;
-            }
-        }
-        
-        if (chapter && !chapter.parse_error) {
-            showChapterModal(chapter);
-        } else {
-            Utils.showMessage('章节内容不可用，请重新生成', 'warning');
-        }
-    } catch (error) {
-        Utils.showMessage('加载章节内容失败: ' + error.message, 'danger');
-    } finally {
-        Utils.hideLoading();
-    }
-};
-
-// 显示章节模态框
-const showChapterModal = (chapter) => {
-    const modalHtml = `
-        <div class="modal fade" id="chapterModal" tabindex="-1">
-            <div class="modal-dialog modal-xl">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h5 class="modal-title">
-                            <i class="fas fa-book me-2"></i>
-                            ${chapter.title || `第${chapter.chapter_number}章`}
-                        </h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                    </div>
-                    <div class="modal-body">
-                        <div class="chapter-content">
-                            <div class="chapter-meta mb-3">
-                                <span class="badge bg-primary">字数: ${chapter.word_count || 0}</span>
-                                <span class="badge bg-secondary ms-2">章节: ${chapter.chapter_number}</span>
-                            </div>
-                            <div class="chapter-text">
-                                ${Utils.formatChapterContent(chapter.content || '')}
-                            </div>
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
-                        <button type="button" class="btn btn-success" onclick="downloadChapter('${chapter.chapter_number}')">
-                            <i class="fas fa-download me-2"></i>下载章节
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    `;
-    
-    // 移除现有模态框
-    const existingModal = document.getElementById('chapterModal');
-    if (existingModal) {
-        existingModal.remove();
-    }
-    
-    // 添加新模态框
-    document.body.insertAdjacentHTML('beforeend', modalHtml);
-    
-    // 显示模态框
-    const modal = new bootstrap.Modal(document.getElementById('chapterModal'));
-    modal.show();
-};
-
-// 下载章节
-window.downloadChapter = async (chapterNumber) => {
-    try {
-        Utils.showLoading('正在准备下载...');
-        
-        const response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/chapters/${chapterNumber}/txt`, {
-            method: 'POST'
-        });
-        
-        if (response.success) {
-            Utils.showMessage('章节已保存为TXT文件！', 'success');
-        }
-    } catch (error) {
-        Utils.showMessage('下载章节失败: ' + error.message, 'danger');
-    } finally {
-        Utils.hideLoading();
-    }
-};
-
-// 编辑模式管理
-const EditModeManager = {
-    currentEditMode: null,
-    
-    // 切换编辑模式
-    toggleEditMode: (stepKey) => {
-        if (EditModeManager.currentEditMode === stepKey) {
-            // 退出编辑模式
-            EditModeManager.exitEditMode();
-        } else {
-            // 进入编辑模式
-            EditModeManager.enterEditMode(stepKey);
-        }
-    },
-    
-    // 进入编辑模式
-    enterEditMode: (stepKey) => {
-        // 如果已经在编辑其他内容，先退出
-        if (EditModeManager.currentEditMode && EditModeManager.currentEditMode !== stepKey) {
-            EditModeManager.exitEditMode();
-        }
-        
-        EditModeManager.currentEditMode = stepKey;
-        
-        // 为所有可编辑元素添加编辑功能
-        const editableElements = document.querySelectorAll('.editable');
-        editableElements.forEach(element => {
-            element.contentEditable = true;
-            element.classList.add('editing');
-            element.addEventListener('blur', EditModeManager.onContentChange);
-            element.addEventListener('keydown', EditModeManager.onKeyDown);
-        });
-        
-        // 显示保存按钮
-        let saveBtnId;
-        if (stepKey === 'character_creation') {
-            saveBtnId = 'save-character-creation-btn';
-        } else if (stepKey === 'storyline_generation') {
-            saveBtnId = 'save-storyline-generation-btn';
-        } else {
-            saveBtnId = `save-${stepKey.replace('_', '-')}-btn`;
-        }
-        
-        const saveBtn = document.getElementById(saveBtnId);
-        if (saveBtn) {
-            saveBtn.style.display = 'inline-block';
-        }
-        
-        // 隐藏其他保存按钮
-        document.querySelectorAll('[id^="save-"][id$="-btn"]').forEach(btn => {
-            if (btn.id !== saveBtnId) {
-                btn.style.display = 'none';
-            }
-        });
-        
-        Utils.showMessage('已进入编辑模式，点击内容进行修改', 'info');
-    },
-    
-    // 退出编辑模式
-    exitEditMode: () => {
-        EditModeManager.currentEditMode = null;
-        
-        // 移除编辑功能
-        const editableElements = document.querySelectorAll('.editable');
-        editableElements.forEach(element => {
-            element.contentEditable = false;
-            element.classList.remove('editing');
-            element.removeEventListener('blur', EditModeManager.onContentChange);
-            element.removeEventListener('keydown', EditModeManager.onKeyDown);
-        });
-        
-        // 隐藏所有保存按钮
-        document.querySelectorAll('[id^="save-"][id$="-btn"]').forEach(btn => {
-            btn.style.display = 'none';
-        });
-        
-        Utils.showMessage('已退出编辑模式', 'info');
-    },
-    
-    // 内容变化处理
-    onContentChange: (event) => {
-        const element = event.target;
-        element.classList.add('modified');
-    },
-    
-    // 键盘事件处理
-    onKeyDown: (event) => {
-        // ESC键退出编辑模式
-        if (event.key === 'Escape') {
-            EditModeManager.exitEditMode();
-        }
-        // Ctrl+S保存
-        if (event.ctrlKey && event.key === 's') {
-            event.preventDefault();
-            const currentStep = EditModeManager.currentEditMode;
-            if (currentStep) {
-                ContentSaveManager.saveStepContent(currentStep);
-            }
-        }
-    },
-    
-    // 获取修改后的内容
-    getModifiedContent: () => {
-        const modifiedData = {};
-        const modifiedElements = document.querySelectorAll('.editable.modified');
-        
-        modifiedElements.forEach(element => {
-            const field = element.getAttribute('data-field');
-            const value = element.textContent.trim();
-            
-            // 解析字段路径
-            const fieldParts = field.split('.');
-            let current = modifiedData;
-            
-            for (let i = 0; i < fieldParts.length - 1; i++) {
-                const part = fieldParts[i];
-                if (!current[part]) {
-                    current[part] = {};
-                }
-                current = current[part];
-            }
-            
-            const lastPart = fieldParts[fieldParts.length - 1];
-            
-            // 特殊处理数组字段
-            if (lastPart === 'personality_traits' || lastPart === 'themes' || lastPart === 'skills' || lastPart === 'distinctive_features') {
-                // 如果用户输入的是逗号分隔的字符串，转换为数组
-                if (value.includes(',')) {
-                    current[lastPart] = value.split(',').map(item => item.trim()).filter(item => item);
-                } else if (value) {
-                    current[lastPart] = [value];
-                } else {
-                    current[lastPart] = [];
-                }
-            } else if (fieldParts.includes('supporting_characters')) {
-                // 特殊处理配角字段，保持对象格式
-                current[lastPart] = value;
-            } else if (lastPart === 'extraversion' || lastPart === 'agreeableness' || lastPart === 'conscientiousness' || lastPart === 'neuroticism' || lastPart === 'openness') {
-                // 处理性格评分字段，确保是数字
-                const numValue = parseInt(value);
-                current[lastPart] = isNaN(numValue) ? 5 : Math.max(1, Math.min(10, numValue));
-            } else if (lastPart === 'age') {
-                // 处理年龄字段，确保是数字
-                const numValue = parseInt(value);
-                current[lastPart] = isNaN(numValue) ? 25 : Math.max(1, Math.min(200, numValue));
-            } else {
-                current[lastPart] = value;
-            }
-        });
-        
-        return modifiedData;
-    },
-    
-    // 验证修改内容
-    validateModifiedContent: (modifiedData) => {
-        const errors = [];
-        
-        // 检查是否有修改
-        if (Object.keys(modifiedData).length === 0) {
-            errors.push('没有检测到任何修改');
-            return errors;
-        }
-        
-        // 验证角色数据
-        if (modifiedData.main_character) {
-            const mc = modifiedData.main_character;
-            if (mc.basic_info) {
-                if (mc.basic_info.name && mc.basic_info.name.length > 50) {
-                    errors.push('角色姓名不能超过50个字符');
-                }
-                if (mc.basic_info.age && (isNaN(mc.basic_info.age) || mc.basic_info.age < 1 || mc.basic_info.age > 200)) {
-                    errors.push('角色年龄必须是1-200之间的数字');
-                }
-            }
-        }
-        
-        return errors;
-    }
-};
-
-// 质量评估管理
-const QualityAssessmentManager = {
-    // 执行质量评估
-    assessQuality: async (stepKey) => {
-        if (!AppState.currentNovelId) {
-            Utils.showMessage('没有活跃的小说项目', 'warning');
-            return;
-        }
-        
+/* 覆盖 startPolling：完成后还要自动刷新当前页 */
+App._startPollingOriginal = App.startPolling;
+App.startPolling = function (taskId, onDone) {
+    if (State.pollers[taskId]) return;
+    State.runningTaskIds.add(taskId);
+    App.renderTaskDock();
+    const id = setInterval(async () => {
         try {
-            // 先检查是否有未保存的修改
-            const modifiedElements = document.querySelectorAll('.editable.modified');
-            if (modifiedElements.length > 0) {
-                const shouldSave = confirm('检测到未保存的修改，是否先保存修改再进行质量评估？');
-                if (shouldSave) {
-                    await ContentSaveManager.saveStepContent(stepKey);
-                    // 等待保存完成
-                    await new Promise(resolve => setTimeout(resolve, 1000));
-                }
-            }
-            
-            Utils.showLoading('正在进行质量评估...');
-            
-            let response;
-            if (stepKey === 'character_creation') {
-                // 调用人物质量评估API
-                response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/characters/quality`, {
-                    method: 'POST'
-                });
-            } else if (stepKey === 'storyline_generation') {
-                // 调用故事线质量评估API
-                response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/storyline/quality`, {
-                    method: 'POST'
-                });
-            } else {
-                throw new Error('不支持的步骤类型: ' + stepKey);
-            }
-            
-            if (response.success) {
-                Utils.showMessage('质量评估完成！', 'success');
-                // 重新加载步骤详情以显示评估结果
-                await StepDetailsManager.loadStepDetails(stepKey);
-            }
-        } catch (error) {
-            console.error('质量评估错误详情:', error);
-            Utils.showMessage('质量评估失败: ' + error.message, 'danger');
-        } finally {
-            Utils.hideLoading();
-        }
-    }
-};
-
-// 内容保存管理
-const ContentSaveManager = {
-    // 保存步骤内容
-    saveStepContent: async (stepKey) => {
-        if (!AppState.currentNovelId) {
-            Utils.showMessage('没有活跃的小说项目', 'warning');
-            return;
-        }
-        
-        try {
-            Utils.showLoading('正在保存修改...');
-            
-            const modifiedContent = EditModeManager.getModifiedContent();
-            
-            // 验证修改内容
-            const validationErrors = EditModeManager.validateModifiedContent(modifiedContent);
-            if (validationErrors.length > 0) {
-                Utils.showMessage('保存失败: ' + validationErrors.join(', '), 'warning');
-                return;
-            }
-            
-            let response;
-            if (stepKey === 'character_creation') {
-                // 使用新的智能体改进API
-                response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/characters/improve-with-agent`, {
-                    method: 'POST',
-                    body: JSON.stringify({
-                        modifications: modifiedContent
-                    })
-                });
-            } else if (stepKey === 'storyline_generation') {
-                response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/storyline`, {
-                    method: 'PUT',
-                    body: JSON.stringify(modifiedContent)
-                });
-            } else {
-                throw new Error('不支持的步骤类型: ' + stepKey);
-            }
-            
-            if (response.success) {
-                let message = '内容保存成功！';
-                if (stepKey === 'character_creation' && response.improvement_applied) {
-                    message = '人物数据已通过智能体改进并保存！';
-                }
-                Utils.showMessage(message, 'success');
-                EditModeManager.exitEditMode();
-                
-                // 等待一小段时间确保数据已保存
-                await new Promise(resolve => setTimeout(resolve, 500));
-                
-                // 重新加载步骤详情
-                await StepDetailsManager.loadStepDetails(stepKey);
-            }
-        } catch (error) {
-            console.error('保存错误详情:', error);
-            Utils.showMessage('保存失败: ' + error.message, 'danger');
-        } finally {
-            Utils.hideLoading();
-        }
-    }
-};
-
-// 标签管理
-const TagManager = {
-    editMode: false,
-    modifiedTags: {},
-    
-    // 切换标签编辑模式
-    toggleEditMode: () => {
-        TagManager.editMode = !TagManager.editMode;
-        
-        const removeButtons = document.querySelectorAll('.tag-remove');
-        const saveBtn = document.getElementById('save-tags-btn');
-        
-        if (TagManager.editMode) {
-            // 进入编辑模式
-            removeButtons.forEach(btn => btn.style.display = 'inline-block');
-            if (saveBtn) saveBtn.style.display = 'inline-block';
-            Utils.showMessage('已进入标签编辑模式，可以删除标签', 'info');
-        } else {
-            // 退出编辑模式
-            removeButtons.forEach(btn => btn.style.display = 'none');
-            if (saveBtn) saveBtn.style.display = 'none';
-            Utils.showMessage('已退出标签编辑模式', 'info');
-        }
-    },
-    
-    // 删除标签
-    removeTag: (category, tag) => {
-        const tagElement = document.querySelector(`[data-category="${category}"][data-tag="${tag}"]`);
-        if (tagElement) {
-            tagElement.remove();
-            
-            // 记录修改
-            if (!TagManager.modifiedTags[category]) {
-                TagManager.modifiedTags[category] = [];
-            }
-            TagManager.modifiedTags[category].push({ action: 'remove', tag: tag });
-            
-            Utils.showMessage(`已删除标签: ${tag}`, 'success');
-        }
-    },
-    
-    // 添加标签
-    addTag: (category, tag) => {
-        const categoryElement = document.querySelector(`[data-category="${category}"]`);
-        if (categoryElement) {
-            const tagList = categoryElement.querySelector('.tag-list');
-            const newTagElement = document.createElement('span');
-            newTagElement.className = 'tag';
-            newTagElement.setAttribute('data-category', category);
-            newTagElement.setAttribute('data-tag', tag);
-            newTagElement.innerHTML = `
-                ${tag}
-                <i class="fas fa-times tag-remove" onclick="removeTag('${category}', '${tag}')" style="display: ${TagManager.editMode ? 'inline-block' : 'none'};"></i>
-            `;
-            tagList.appendChild(newTagElement);
-            
-            // 记录修改
-            if (!TagManager.modifiedTags[category]) {
-                TagManager.modifiedTags[category] = [];
-            }
-            TagManager.modifiedTags[category].push({ action: 'add', tag: tag });
-            
-            Utils.showMessage(`已添加标签: ${tag}`, 'success');
-        }
-    },
-    
-    // 获取修改后的标签数据
-    getModifiedTags: () => {
-        const currentTags = {};
-        const tagElements = document.querySelectorAll('.tag');
-        
-        tagElements.forEach(tagElement => {
-            const category = tagElement.getAttribute('data-category');
-            const tag = tagElement.getAttribute('data-tag');
-            
-            if (!currentTags[category]) {
-                currentTags[category] = [];
-            }
-            currentTags[category].push(tag);
-        });
-        
-        return currentTags;
-    },
-    
-    // 保存标签修改
-    saveTagChanges: async () => {
-        if (!AppState.currentNovelId) {
-            Utils.showMessage('没有活跃的小说项目', 'warning');
-            return;
-        }
-        
-        try {
-            Utils.showLoading('正在保存标签修改...');
-            
-            const modifiedTags = TagManager.getModifiedTags();
-            
-            const response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/tags`, {
-                method: 'PUT',
-                body: JSON.stringify({ selected_tags: modifiedTags })
-            });
-            
-            if (response.success) {
-                Utils.showMessage('标签修改保存成功！', 'success');
-                TagManager.editMode = false;
-                TagManager.modifiedTags = {};
-                
-                // 重新加载标签详情
-                await StepDetailsManager.loadStepDetails('tag_selection');
-            }
-        } catch (error) {
-            Utils.showMessage('保存标签修改失败: ' + error.message, 'danger');
-        } finally {
-            Utils.hideLoading();
-        }
-    },
-    
-    // 显示添加标签模态框
-    showAddTagModal: async () => {
-        try {
-            // 获取可用的标签分类
-            const response = await Utils.apiRequest('/config/tags');
-            const availableCategories = response.success ? response.data : {};
-            
-            const modalHtml = `
-                <div class="modal fade" id="addTagModal" tabindex="-1">
-                    <div class="modal-dialog">
-                        <div class="modal-content">
-                            <div class="modal-header">
-                                <h5 class="modal-title">
-                                    <i class="fas fa-plus me-2"></i>添加标签
-                                </h5>
-                                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                            </div>
-                            <div class="modal-body">
-                                <div class="mb-3">
-                                    <label for="tag-category" class="form-label">选择标签分类</label>
-                                    <select class="form-select" id="tag-category">
-                                        ${Object.keys(availableCategories).map(category => 
-                                            `<option value="${category}">${category}</option>`
-                                        ).join('')}
-                                    </select>
-                                </div>
-                                
-                                <div class="mb-3">
-                                    <label for="tag-input" class="form-label">输入标签名称</label>
-                                    <input type="text" class="form-control" id="tag-input" placeholder="请输入标签名称">
-                                </div>
-                                
-                                <div class="mb-3">
-                                    <label class="form-label">或从现有标签中选择</label>
-                                    <div id="available-tags">
-                                        ${Object.entries(availableCategories).map(([category, tags]) => `
-                                            <div class="category-tags mb-2">
-                                                <strong>${category}:</strong>
-                                                <div class="tag-options">
-                                                    ${tags.map(tag => `
-                                                        <span class="tag-option" onclick="selectExistingTag('${category}', '${tag}')">${tag}</span>
-                                                    `).join('')}
-                                                </div>
-                                            </div>
-                                        `).join('')}
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="modal-footer">
-                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                                <button type="button" class="btn btn-primary" onclick="confirmAddTag()">
-                                    <i class="fas fa-plus me-2"></i>添加标签
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `;
-            
-            // 移除现有模态框
-            const existingModal = document.getElementById('addTagModal');
-            if (existingModal) {
-                existingModal.remove();
-            }
-            
-            // 添加新模态框
-            document.body.insertAdjacentHTML('beforeend', modalHtml);
-            
-            // 显示模态框
-            const modal = new bootstrap.Modal(document.getElementById('addTagModal'));
-            modal.show();
-            
-        } catch (error) {
-            Utils.showMessage('加载标签选项失败: ' + error.message, 'danger');
-        }
-    }
-};
-
-// 全局函数
-window.toggleEditMode = EditModeManager.toggleEditMode;
-window.assessQuality = QualityAssessmentManager.assessQuality;
-window.saveStepContent = ContentSaveManager.saveStepContent;
-
-// 标签管理全局函数
-window.toggleTagEditMode = TagManager.toggleEditMode;
-window.removeTag = TagManager.removeTag;
-window.showAddTagModal = TagManager.showAddTagModal;
-window.saveTagChanges = TagManager.saveTagChanges;
-
-// 选择现有标签
-window.selectExistingTag = (category, tag) => {
-    document.getElementById('tag-category').value = category;
-    document.getElementById('tag-input').value = tag;
-};
-
-// 确认添加标签
-window.confirmAddTag = () => {
-    const category = document.getElementById('tag-category').value;
-    const tag = document.getElementById('tag-input').value.trim();
-    
-    if (!tag) {
-        Utils.showMessage('请输入标签名称', 'warning');
-        return;
-    }
-    
-    // 检查标签是否已存在
-    const existingTag = document.querySelector(`[data-category="${category}"][data-tag="${tag}"]`);
-    if (existingTag) {
-        Utils.showMessage('该标签已存在', 'warning');
-        return;
-    }
-    
-    TagManager.addTag(category, tag);
-    
-    // 关闭模态框
-    const modal = bootstrap.Modal.getInstance(document.getElementById('addTagModal'));
-    modal.hide();
-};
-
-// 小说选择处理
-window.selectNovel = async (novelId) => {
-    AppState.selectedNovelId = novelId;
-    
-    try {
-        Utils.showLoading('正在加载小说详情...');
-        
-        // 获取小说基本信息
-        const novelResponse = await Utils.apiRequest(`/novels/${novelId}/data/metadata`);
-        if (!novelResponse.success) {
-            throw new Error('获取小说信息失败');
-        }
-        
-        const novel = novelResponse.data;
-        
-        // 获取章节列表
-        const chaptersResponse = await Utils.apiRequest(`/novels/${novelId}/chapters`);
-        const chapters = chaptersResponse.success ? chaptersResponse.data : [];
-        
-        // 显示小说详情和续写选项
-        showNovelDetailForContinuation(novel, chapters);
-        
-    } catch (error) {
-        Utils.showMessage('加载小说详情失败: ' + error.message, 'danger');
-    } finally {
-        Utils.hideLoading();
-    }
-};
-
-// 查看小说详情
-window.viewNovelDetails = async (novelId) => {
-    try {
-        Utils.showLoading('正在加载小说详情...');
-        
-        // 获取小说基本信息
-        const novelResponse = await Utils.apiRequest(`/novels/${novelId}/data/metadata`);
-        if (!novelResponse.success) {
-            throw new Error('获取小说信息失败');
-        }
-        
-        const novel = novelResponse.data;
-        
-        // 获取章节列表
-        const chaptersResponse = await Utils.apiRequest(`/novels/${novelId}/chapters`);
-        const chapters = chaptersResponse.success ? chaptersResponse.data : [];
-        
-        // 显示详情模态框
-        showNovelDetailsModal(novel, chapters);
-        
-    } catch (error) {
-        Utils.showMessage('加载小说详情失败: ' + error.message, 'danger');
-    } finally {
-        Utils.hideLoading();
-    }
-};
-
-// 显示小说详情模态框
-const showNovelDetailsModal = (novel, chapters) => {
-    const modalHtml = `
-        <div class="modal fade" id="novelDetailsModal" tabindex="-1">
-            <div class="modal-dialog modal-xl">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h5 class="modal-title">
-                            <i class="fas fa-book me-2"></i>
-                            ${novel.title || '未命名小说'}
-                        </h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                    </div>
-                    <div class="modal-body">
-                        <div class="row">
-                            <div class="col-md-6">
-                                <div class="novel-info">
-                                    <h6 class="text-primary">基本信息</h6>
-                                    <p><strong>标题:</strong> ${novel.title || '未命名'}</p>
-                                    <p><strong>状态:</strong> <span class="badge bg-${novel.status === 'completed' ? 'success' : 'warning'}">${novel.status || '未知'}</span></p>
-                                    <p><strong>创建时间:</strong> ${Utils.formatDate(novel.created_at)}</p>
-                                    <p><strong>更新时间:</strong> ${Utils.formatDate(novel.updated_at)}</p>
-                                    <p><strong>章节数:</strong> ${chapters.length}</p>
-                                </div>
-                            </div>
-                            <div class="col-md-6">
-                                <div class="novel-actions">
-                                    <h6 class="text-primary">操作</h6>
-                                    <div class="d-grid gap-2">
-                                        <button class="btn btn-success" onclick="startContinuationFromList('${novel.novel_id}')">
-                                            <i class="fas fa-edit me-2"></i>续写小说
-                                        </button>
-                                        <button class="btn btn-info" onclick="viewNovelWorkflow('${novel.novel_id}')">
-                                            <i class="fas fa-cogs me-2"></i>查看工作流
-                                        </button>
-                                        <button class="btn btn-warning btn-sm" onclick="checkQuickContinuationProgressForNovel('${novel.novel_id}')">
-                                            <i class="fas fa-chart-line me-2"></i>查看续写进度
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        ${chapters.length > 0 ? `
-                            <div class="mt-4">
-                                <h6 class="text-primary">章节列表</h6>
-                                <div class="chapters-list">
-                                    ${chapters.map(chapter => `
-                                        <div class="chapter-item d-flex justify-content-between align-items-center p-2 border rounded mb-2">
-                                            <div>
-                                                <strong>${chapter.title || `第${chapter.chapter_number}章`}</strong>
-                                                <small class="text-muted ms-2">${Utils.formatDate(chapter.created_at)}</small>
-                                            </div>
-                                            <div class="d-flex align-items-center gap-2">
-                                                <span class="badge bg-secondary">${chapter.word_count || 0}字</span>
-                                                <button class="btn btn-sm btn-outline-info" onclick="viewChapterWorkflow('${novel.novel_id}', ${chapter.chapter_number})" title="查看章节工作流">
-                                                    <i class="fas fa-cogs me-1"></i>工作流
-                                                </button>
-                                                <button class="btn btn-sm btn-outline-primary" onclick="viewChapterInModal('${novel.novel_id}', ${chapter.chapter_number})" title="查看章节内容">
-                                                    <i class="fas fa-eye"></i>
-                                                </button>
-                                            </div>
-                                        </div>
-                                    `).join('')}
-                                </div>
-                            </div>
-                        ` : ''}
-                    </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    `;
-    
-    // 移除现有模态框
-    const existingModal = document.getElementById('novelDetailsModal');
-    if (existingModal) {
-        existingModal.remove();
-    }
-    
-    // 添加新模态框
-    document.body.insertAdjacentHTML('beforeend', modalHtml);
-    
-    // 显示模态框
-    const modal = new bootstrap.Modal(document.getElementById('novelDetailsModal'));
-    modal.show();
-};
-
-// 查看小说工作流
-window.viewNovelWorkflow = (novelId) => {
-    // 关闭详情模态框
-    const modal = bootstrap.Modal.getInstance(document.getElementById('novelDetailsModal'));
-    if (modal) {
-        modal.hide();
-    }
-    
-    // 进入创作流程页面
-    Navigation.showCreationWorkflow(novelId);
-};
-
-// 在模态框中查看章节
-window.viewChapterInModal = async (novelId, chapterNumber) => {
-    try {
-        const response = await Utils.apiRequest(`/novels/${novelId}/chapters`);
-        if (response.success) {
-            const chapters = response.data;
-            const chapter = chapters.find(ch => ch.chapter_number == chapterNumber);
-            if (chapter) {
-                showChapterModal(chapter);
-            }
-        }
-    } catch (error) {
-        Utils.showMessage('加载章节失败: ' + error.message, 'danger');
-    }
-};
-
-// 基于质量评估优化角色
-window.optimizeCharactersBasedOnQuality = async () => {
-    if (!AppState.currentNovelId) {
-        Utils.showMessage('没有活跃的小说项目', 'warning');
-        return;
-    }
-    
-    try {
-        Utils.showLoading('正在基于质量评估优化角色...');
-        
-        // 首先检查是否有质量评估数据
-        const qualityResponse = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/data/character_quality_assessment`);
-        
-        if (!qualityResponse.success || !qualityResponse.data) {
-            Utils.hideLoading();
-            Utils.showMessage('请先进行角色质量评估', 'warning');
-            return;
-        }
-        
-        const qualityData = qualityResponse.data;
-        const suggestions = qualityData.suggestions || [];
-        
-        if (suggestions.length === 0) {
-            Utils.hideLoading();
-            Utils.showMessage('质量评估显示角色已经很好，无需优化', 'info');
-            return;
-        }
-        
-        // 调用角色优化API
-        const response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/characters/improve`, {
-            method: 'POST',
-            body: JSON.stringify({
-                suggestions: suggestions
-            })
-        });
-        
-        Utils.hideLoading();
-        
-        if (response.success) {
-            Utils.showMessage('角色优化成功！', 'success');
-            
-            // 刷新角色详情显示
-            const characterDetailsElement = document.getElementById('character-content');
-            if (characterDetailsElement) {
-                await StepDetailsManager.loadCharacterDetails(characterDetailsElement);
-            }
-            
-            // 显示优化结果
-            const result = response.data;
-            if (result.quality_assessment) {
-                const score = result.quality_assessment.overall_score;
-                const level = result.quality_assessment.quality_level;
-                Utils.showMessage(`优化完成！当前质量评分：${score}分 (${level})`, 'success');
-            }
-        } else {
-            Utils.showMessage('角色优化失败: ' + (response.error || '未知错误'), 'danger');
-        }
-        
-    } catch (error) {
-        Utils.hideLoading();
-        Utils.showMessage('角色优化失败: ' + error.message, 'danger');
-    }
-};
-
-// 基于质量评估优化故事线
-window.optimizeStorylineBasedOnQuality = async () => {
-    if (!AppState.currentNovelId) {
-        Utils.showMessage('没有活跃的小说项目', 'warning');
-        return;
-    }
-    
-    try {
-        Utils.showLoading('正在基于质量评估优化故事线...');
-        
-        // 首先检查是否有质量评估数据
-        const qualityResponse = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/data/storyline_quality_assessment`);
-        
-        if (!qualityResponse.success || !qualityResponse.data) {
-            Utils.hideLoading();
-            Utils.showMessage('请先进行故事线质量评估', 'warning');
-            return;
-        }
-        
-        const qualityData = qualityResponse.data;
-        const suggestions = qualityData.suggestions || [];
-        
-        if (suggestions.length === 0) {
-            Utils.hideLoading();
-            Utils.showMessage('质量评估显示故事线已经很好，无需优化', 'info');
-            return;
-        }
-        
-        // 调用故事线优化API
-        const response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/storyline/improve`, {
-            method: 'POST',
-            body: JSON.stringify({
-                suggestions: suggestions
-            })
-        });
-        
-        Utils.hideLoading();
-        
-        if (response.success) {
-            const result = response.data;
-            
-            // 检查优化结果
-            if (result.status === 'success') {
-                Utils.showMessage('故事线优化成功！', 'success');
-                
-                // 显示优化结果
-                if (result.quality_assessment) {
-                    const score = result.quality_assessment.overall_score;
-                    const level = result.quality_assessment.quality_level;
-                    Utils.showMessage(`优化完成！当前质量评分：${score}分 (${level})`, 'success');
-                }
-            } else if (result.status === 'needs_improvement') {
-                Utils.showMessage('故事线已优化，但仍有改进空间', 'warning');
-                
-                // 显示优化结果
-                if (result.quality_assessment) {
-                    const score = result.quality_assessment.overall_score;
-                    const level = result.quality_assessment.quality_level;
-                    Utils.showMessage(`优化完成！当前质量评分：${score}分 (${level})`, 'warning');
-                }
-            } else {
-                Utils.showMessage('故事线优化完成，但状态未知', 'info');
-            }
-            
-            // 刷新故事线详情显示
-            const storylineDetailsElement = document.getElementById('storyline-content');
-            if (storylineDetailsElement) {
-                await StepDetailsManager.loadStorylineDetails(document.getElementById('step-details-storyline_generation'));
-            }
-        } else {
-            Utils.showMessage('故事线优化失败: ' + (response.error || '未知错误'), 'danger');
-        }
-        
-    } catch (error) {
-        Utils.hideLoading();
-        Utils.showMessage('故事线优化失败: ' + error.message, 'danger');
-    }
-};
-
-
-// 页面加载完成后的初始化
-document.addEventListener('DOMContentLoaded', () => {
-    // 设置表单提交事件
-    document.getElementById('create-novel-form').addEventListener('submit', (e) => {
-        e.preventDefault();
-        window.createNovel();
-    });
-    
-    // 设置字符计数
-    const requirementsTextarea = document.getElementById('novel-requirements');
-    const requirementsCount = document.getElementById('requirements-count');
-    
-    if (requirementsTextarea && requirementsCount) {
-        requirementsTextarea.addEventListener('input', () => {
-            const count = requirementsTextarea.value.length;
-            requirementsCount.textContent = count;
-            
-            // 根据字符数改变颜色
-            if (count > 1800) {
-                requirementsCount.style.color = '#dc3545'; // 红色
-            } else if (count > 1500) {
-                requirementsCount.style.color = '#ffc107'; // 黄色
-            } else {
-                requirementsCount.style.color = '#6c757d'; // 灰色
-            }
-        });
-    }
-    
-    // 初始化页面
-    Navigation.showWelcome();
-    
-    // 显示欢迎消息
-    Utils.showMessage('欢迎使用 InkAI 智能小说创作系统！', 'info', 3000);
-});
-
-// 续写编辑模式管理
-const ContinuationEditModeManager = {
-    currentEditMode: null,
-    
-    // 切换续写编辑模式
-    toggleEditMode: (stepKey) => {
-        if (ContinuationEditModeManager.currentEditMode === stepKey) {
-            ContinuationEditModeManager.exitEditMode();
-        } else {
-            ContinuationEditModeManager.enterEditMode(stepKey);
-        }
-    },
-    
-    // 进入编辑模式
-    enterEditMode: (stepKey) => {
-        // 如果已经在编辑其他内容，先退出
-        if (ContinuationEditModeManager.currentEditMode && ContinuationEditModeManager.currentEditMode !== stepKey) {
-            ContinuationEditModeManager.exitEditMode();
-        }
-        
-        ContinuationEditModeManager.currentEditMode = stepKey;
-        
-        // 为所有可编辑元素添加编辑功能
-        const editableElements = document.querySelectorAll('.editable');
-        editableElements.forEach(element => {
-            element.contentEditable = true;
-            element.classList.add('editing');
-            element.addEventListener('blur', ContinuationEditModeManager.onContentChange);
-            element.addEventListener('keydown', ContinuationEditModeManager.onKeyDown);
-        });
-        
-        // 显示保存按钮
-        const saveBtn = document.getElementById('save-continuation-storyline-btn');
-        if (saveBtn) {
-            saveBtn.style.display = 'inline-block';
-        }
-        
-        Utils.showMessage('已进入编辑模式，点击内容进行修改', 'info');
-    },
-    
-    // 退出编辑模式
-    exitEditMode: () => {
-        if (!ContinuationEditModeManager.currentEditMode) return;
-        
-        // 移除所有可编辑元素的编辑功能
-        const editableElements = document.querySelectorAll('.editable');
-        editableElements.forEach(element => {
-            element.contentEditable = false;
-            element.classList.remove('editing');
-            element.removeEventListener('blur', ContinuationEditModeManager.onContentChange);
-            element.removeEventListener('keydown', ContinuationEditModeManager.onKeyDown);
-        });
-        
-        // 隐藏保存按钮
-        const saveBtn = document.getElementById('save-continuation-storyline-btn');
-        if (saveBtn) {
-            saveBtn.style.display = 'none';
-        }
-        
-        ContinuationEditModeManager.currentEditMode = null;
-        Utils.showMessage('已退出编辑模式', 'info');
-    },
-    
-    // 内容变化处理
-    onContentChange: (event) => {
-        // 可以在这里添加实时保存或其他处理逻辑
-    },
-    
-    // 键盘事件处理
-    onKeyDown: (event) => {
-        if (event.key === 'Escape') {
-            ContinuationEditModeManager.exitEditMode();
-        }
-    },
-    
-    // 获取修改后的内容
-    getModifiedContent: () => {
-        const modifiedContent = {};
-        const editableElements = document.querySelectorAll('.editable');
-        
-        editableElements.forEach(element => {
-            const field = element.getAttribute('data-field');
-            if (field) {
-                // 处理嵌套字段（如 scene_setting.time）
-                const fieldParts = field.split('.');
-                if (fieldParts.length === 1) {
-                    modifiedContent[field] = element.textContent.trim();
-                } else if (fieldParts.length === 2) {
-                    if (!modifiedContent[fieldParts[0]]) {
-                        modifiedContent[fieldParts[0]] = {};
+            const t = await Util.get(`/tasks/${taskId}`);
+            App.renderTaskDock();
+            if (t.status === "succeeded" || t.status === "failed") {
+                clearInterval(id);
+                delete State.pollers[taskId];
+                State.runningTaskIds.delete(taskId);
+                App.renderTaskDock();
+                if (t.status === "succeeded") {
+                    onDone && onDone(t);
+                    // 自动刷新当前页（如果还停留在受影响的小说工作流页）
+                    const r = parseHash();
+                    if (r.name === "novel" && (t.novel_id === r.novelId)) {
+                        renderNovel(document.getElementById("mainContainer"), r.novelId);
+                    } else if (r.name === "home") {
+                        renderHome(document.getElementById("mainContainer"));
                     }
-                    modifiedContent[fieldParts[0]][fieldParts[1]] = element.textContent.trim();
+                } else {
+                    Util.toast(`任务失败：${t.error || "未知错误"}`, "error", 8000);
                 }
             }
+        } catch (_) {}
+    }, 2500);
+    State.pollers[taskId] = id;
+};
+
+/* 启动时把已经在跑的任务接管进 dock */
+App.adoptRunningTasks = async function () {
+    try {
+        const tasks = await Util.get("/tasks");
+        tasks.filter(t => t.status === "running" || t.status === "pending").forEach(t => {
+            if (!State.pollers[t.task_id]) App.startPolling(t.task_id, () => {});
         });
-        
-        return modifiedContent;
-    }
+    } catch (_) {}
 };
 
-// 续写内容保存管理
-const ContinuationContentSaveManager = {
-    // 保存续写故事线内容
-    saveStorylineContent: async () => {
-        if (!AppState.currentNovelId) {
-            Utils.showMessage('没有活跃的小说项目', 'warning');
-            return;
-        }
-        
-        try {
-            Utils.showLoading('正在保存修改...');
-            
-            const modifiedContent = ContinuationEditModeManager.getModifiedContent();
-            
-            // 调用API保存修改
-            const response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/continuation/storyline`, {
-                method: 'PUT',
-                body: JSON.stringify(modifiedContent)
-            });
-            
-            if (response.success) {
-                Utils.showMessage('续写故事线修改保存成功！', 'success');
-                ContinuationEditModeManager.exitEditMode();
-                // 只重新加载当前的故事线详情，不重新加载整个工作流程
-                const currentStepElement = document.querySelector('.step-item.current .step-details');
-                if (currentStepElement) {
-                    await ContinuationManager.loadContinuationStorylineDetails(currentStepElement);
-                }
-            } else {
-                Utils.showMessage('保存失败: ' + (response.message || '未知错误'), 'danger');
-            }
-        } catch (error) {
-            Utils.showMessage('保存失败: ' + error.message, 'danger');
-        } finally {
-            Utils.hideLoading();
-        }
-    }
-};
+window.App = App;
 
-// 续写质量评估和优化函数
-window.assessContinuationQuality = async (contentType) => {
-    if (!AppState.currentNovelId) {
-        Utils.showMessage('没有活跃的小说项目', 'warning');
+/* ----------- 全局键盘快捷键（capture 阶段，避免被任何 stopPropagation 干扰） ----------- */
+function _inEditableField(e) {
+    const t = e.target;
+    if (!t) return false;
+    const tag = (t.tagName || "").toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (t.isContentEditable) return true;
+    return false;
+}
+
+function _handleHotkey(e) {
+    const key = (e.key || "").toLowerCase();
+    const r = parseHash();
+
+    // Ctrl/Cmd + S：永远 preventDefault 阻止浏览器"另存为"，
+    // 在编辑器显示时触发保存
+    if ((e.ctrlKey || e.metaKey) && key === "s") {
+        e.preventDefault();
+        e.stopPropagation();
+        const editor = document.getElementById("chEditor");
+        if (editor && editor.style.display !== "none" && r.name === "chapter") {
+            App.saveChapter(r.n);
+        }
         return;
     }
-    
-    try {
-        Utils.showLoading('正在进行质量评估...');
-        
-        const response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/continuation/quality`, {
-            method: 'POST',
-            body: JSON.stringify({ content_type: contentType })
-        });
-        
-        if (response.success) {
-            Utils.showMessage('质量评估完成！', 'success');
-            // 根据内容类型重新加载相应的详情
-            const currentStepElement = document.querySelector('.step-item.current .step-details');
-            if (currentStepElement) {
-                if (contentType === 'storyline') {
-                    await ContinuationManager.loadContinuationStorylineDetails(currentStepElement);
-                } else if (contentType === 'story') {
-                    await StepDetailsManager.loadContinuationChapterDetails(currentStepElement);
-                }
+
+    // 在 input/textarea 中输入时，不拦截方向键和 F/E
+    if (_inEditableField(e)) return;
+
+    if (r.name === "chapter") {
+        if (key === "arrowleft" || key === "pageup") {
+            if (r.n > 1) {
+                e.preventDefault();
+                App.go(`#/novel/${r.novelId}/chapter/${r.n - 1}`);
             }
-        } else {
-            Utils.showMessage('质量评估失败: ' + (response.message || '未知错误'), 'danger');
-        }
-    } catch (error) {
-        Utils.showMessage('质量评估失败: ' + error.message, 'danger');
-    } finally {
-        Utils.hideLoading();
-    }
-};
-
-window.optimizeContinuationStorylineBasedOnQuality = async () => {
-    if (!AppState.currentNovelId) {
-        Utils.showMessage('没有活跃的小说项目', 'warning');
-        return;
-    }
-    
-    try {
-        Utils.showLoading('正在基于质量评估优化故事线...');
-        
-        // 首先检查是否有质量评估数据
-        const qualityResponse = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/data/continuation_storyline_quality_assessment`);
-        
-        if (!qualityResponse.success || !qualityResponse.data) {
-            Utils.hideLoading();
-            Utils.showMessage('请先进行续写故事线质量评估', 'warning');
-            return;
-        }
-        
-        const qualityData = qualityResponse.data;
-        const suggestions = qualityData.suggestions || [];
-        
-        if (suggestions.length === 0) {
-            Utils.hideLoading();
-            Utils.showMessage('质量评估显示续写故事线已经很好，无需优化', 'info');
-            return;
-        }
-        
-        // 调用续写故事线优化API
-        const response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/continuation/storyline/improve`, {
-            method: 'POST',
-            body: JSON.stringify({
-                suggestions: suggestions
-            })
-        });
-        
-        Utils.hideLoading();
-        
-        if (response.success) {
-            const result = response.data;
-            if (result.status === 'success') {
-                Utils.showMessage('续写故事线优化完成！', 'success');
-                
-                // 显示优化结果
-                if (result.quality_assessment) {
-                    const score = result.quality_assessment.overall_score;
-                    const level = result.quality_assessment.quality_level;
-                    Utils.showMessage(`优化完成！当前质量评分：${score}分 (${level})`, 'success');
-                }
-            } else if (result.status === 'needs_improvement') {
-                Utils.showMessage('续写故事线已优化，但仍有改进空间', 'warning');
-                
-                // 显示优化结果
-                if (result.quality_assessment) {
-                    const score = result.quality_assessment.overall_score;
-                    const level = result.quality_assessment.quality_level;
-                    Utils.showMessage(`优化完成！当前质量评分：${score}分 (${level})`, 'warning');
-                }
-            } else {
-                Utils.showMessage('续写故事线优化完成，但状态未知', 'info');
-            }
-            
-            // 只重新加载当前的故事线详情以显示优化结果
-            const currentStepElement = document.querySelector('.step-item.current .step-details');
-            if (currentStepElement) {
-                await ContinuationManager.loadContinuationStorylineDetails(currentStepElement);
-            }
-        } else {
-            Utils.showMessage('续写故事线优化失败: ' + (response.error || '未知错误'), 'danger');
-        }
-    } catch (error) {
-        Utils.showMessage('续写故事线优化失败: ' + error.message, 'danger');
-    } finally {
-        Utils.hideLoading();
-    }
-};
-
-// 续写步骤操作函数
-window.regenerateContinuationStep = async (stepKey) => {
-    if (!AppState.currentNovelId) {
-        Utils.showMessage('没有活跃的小说项目', 'warning');
-        return;
-    }
-    
-    try {
-        Utils.showLoading(`正在重新生成续写${stepKey}...`);
-        
-        // 根据步骤类型调用相应的API
-        switch (stepKey) {
-            case 'storyline_generation':
-                await Utils.apiRequest(`/novels/${AppState.currentNovelId}/continuation/storyline`, {
-                    method: 'POST'
-                });
-                break;
-            case 'chapter_writing':
-                await Utils.apiRequest(`/novels/${AppState.currentNovelId}/continuation/chapter`, {
-                    method: 'POST'
-                });
-                break;
-            default:
-                throw new Error('未知的续写步骤: ' + stepKey);
-        }
-        
-        Utils.showMessage(`续写${stepKey}重新生成成功！`, 'success');
-        
-        // 重新加载续写工作流程状态
-        await ContinuationManager.loadContinuationWorkflow(AppState.currentNovelId);
-        
-    } catch (error) {
-        Utils.showMessage(`重新生成续写${stepKey}失败: ` + error.message, 'danger');
-    } finally {
-        Utils.hideLoading();
-    }
-};
-
-window.improveContinuationStep = async (stepKey) => {
-    if (!AppState.currentNovelId) {
-        Utils.showMessage('没有活跃的小说项目', 'warning');
-        return;
-    }
-    
-    // 显示改进对话框
-    const improvementType = stepKey === 'storyline_generation' ? 'storyline' : 'chapter';
-    showContinuationImprovementDialog(improvementType);
-};
-
-// 显示续写改进对话框
-const showContinuationImprovementDialog = (type) => {
-    const modalHtml = `
-        <div class="modal fade" id="continuationImprovementModal" tabindex="-1">
-            <div class="modal-dialog">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h5 class="modal-title">
-                            <i class="fas fa-magic me-2"></i>
-                            改进续写${type === 'storyline' ? '故事线' : '章节'}
-                        </h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                    </div>
-                    <div class="modal-body">
-                        <div class="mb-3">
-                            <label for="continuation-improvement-suggestions" class="form-label">
-                                改进建议（可选，留空将使用AI自动分析）
-                            </label>
-                            <textarea class="form-control" id="continuation-improvement-suggestions" rows="4" 
-                                      placeholder="请输入具体的改进建议，例如：增加更多细节描写，加强人物对话等"></textarea>
-                        </div>
-                        <div class="alert alert-info">
-                            <i class="fas fa-info-circle me-2"></i>
-                            如果不填写改进建议，系统将自动分析当前内容并提供改进方案。
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                        <button type="button" class="btn btn-primary" onclick="confirmContinuationImprovement('${type}')">
-                            <i class="fas fa-magic me-2"></i>开始改进
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    `;
-    
-    // 移除已存在的模态框
-    const existingModal = document.getElementById('continuationImprovementModal');
-    if (existingModal) {
-        existingModal.remove();
-    }
-    
-    // 添加新的模态框
-    document.body.insertAdjacentHTML('beforeend', modalHtml);
-    
-    // 显示模态框
-    const modal = new bootstrap.Modal(document.getElementById('continuationImprovementModal'));
-    modal.show();
-};
-
-// 确认续写改进
-window.confirmContinuationImprovement = async (type) => {
-    const suggestions = document.getElementById('continuation-improvement-suggestions').value.trim();
-    
-    try {
-        Utils.showLoading(`正在改进续写${type}...`);
-        
-        // 关闭模态框
-        const modal = bootstrap.Modal.getInstance(document.getElementById('continuationImprovementModal'));
-        modal.hide();
-        
-        // 调用改进API
-        let response;
-        if (type === 'storyline') {
-            response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/continuation/storyline/improve`, {
-                method: 'POST',
-                body: JSON.stringify({
-                    suggestions: suggestions ? [suggestions] : []
-                })
-            });
-        } else if (type === 'chapter') {
-            response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/continuation/chapter/improve`, {
-                method: 'POST',
-                body: JSON.stringify({
-                    suggestions: suggestions ? [suggestions] : []
-                })
-            });
-        }
-        
-        Utils.hideLoading();
-        
-        if (response.success) {
-            Utils.showMessage(`续写${type}改进成功！`, 'success');
-            // 重新加载续写工作流程状态
-            await ContinuationManager.loadContinuationWorkflow(AppState.currentNovelId);
-        } else {
-            Utils.showMessage(`续写${type}改进失败: ` + (response.error || '未知错误'), 'danger');
-        }
-    } catch (error) {
-        Utils.hideLoading();
-        Utils.showMessage(`续写${type}改进失败: ` + error.message, 'danger');
-    }
-};
-
-// 清除续写章节错误缓存
-window.clearContinuationChapterCache = async () => {
-    if (!AppState.currentNovelId) {
-        Utils.showMessage('没有活跃的小说项目', 'warning');
-        return;
-    }
-    
-    try {
-        Utils.showLoading('正在清除错误数据...');
-        
-        // 调用后端API清除错误的缓存数据
-        const response = await Utils.apiRequest(`/novels/${AppState.currentNovelId}/continuation/clear-cache`, {
-            method: 'POST'
-        });
-        
-        if (response.success) {
-            Utils.showMessage('错误数据已清除，请重新生成续写章节', 'success');
-            // 重新加载续写工作流程状态
-            await ContinuationManager.loadContinuationWorkflow(AppState.currentNovelId);
-        } else {
-            Utils.showMessage('清除错误数据失败: ' + (response.error || '未知错误'), 'danger');
-        }
-    } catch (error) {
-        Utils.showMessage('清除错误数据失败: ' + error.message, 'danger');
-    } finally {
-        Utils.hideLoading();
-    }
-};
-
-// 快速续写功能
-window.showQuickContinuationDialog = () => {
-    // 检查是否有选中的小说
-    const novelId = AppState.selectedNovelId || AppState.currentNovelId;
-    if (!novelId) {
-        Utils.showMessage('请先选择要续写的小说', 'warning');
-        return;
-    }
-    
-    console.log('显示快速续写对话框 - 小说ID:', novelId);
-    const modalHtml = `
-        <div class="modal fade" id="quickContinuationModal" tabindex="-1">
-            <div class="modal-dialog modal-lg">
-                <div class="modal-content">
-                    <div class="modal-header bg-success text-white">
-                        <h5 class="modal-title">
-                            <i class="fas fa-bolt me-2"></i>
-                            快速续写设置
-                        </h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-                    </div>
-                    <div class="modal-body">
-                        <div class="row">
-                            <div class="col-md-6">
-                                <div class="card h-100 border-primary">
-                                    <div class="card-header bg-primary text-white">
-                                        <h6 class="mb-0">
-                                            <i class="fas fa-target me-2"></i>
-                                            指定章节数
-                                        </h6>
-                                    </div>
-                                    <div class="card-body">
-                                        <div class="mb-3">
-                                            <label class="form-label">续写章节数量</label>
-                                            <input type="number" class="form-control" id="chapterCount" 
-                                                   min="1" max="10" value="1" placeholder="输入要续写的章节数">
-                                            <div class="form-text">建议1-5章，最多10章</div>
-                                        </div>
-                                        <div class="mb-3">
-                                            <label class="form-label">续写需求（可选）</label>
-                                            <textarea class="form-control" id="quickRequirements" rows="3" 
-                                                      placeholder="描述您希望续写的内容方向或特殊要求..."></textarea>
-                                        </div>
-                                        <button class="btn btn-primary w-100" onclick="startQuickContinuation('fixed')">
-                                            <i class="fas fa-play me-2"></i>
-                                            开始续写指定章节数
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="col-md-6">
-                                <div class="card h-100 border-success">
-                                    <div class="card-header bg-success text-white">
-                                        <h6 class="mb-0">
-                                            <i class="fas fa-infinity me-2"></i>
-                                            持续写作
-                                        </h6>
-                                    </div>
-                                    <div class="card-body">
-                                        <div class="mb-3">
-                                            <label class="form-label">写作模式</label>
-                                            <select class="form-select" id="continuousMode">
-                                                <option value="auto">自动模式 - AI自主决定何时停止（最多50章）</option>
-                                                <option value="infinite">无限模式 - 持续写作直到故事自然结束</option>
-                                                <option value="manual">手动模式 - 每章完成后询问是否继续</option>
-                                            </select>
-                                        </div>
-                                        <div class="mb-3">
-                                            <label class="form-label">续写需求（可选）</label>
-                                            <textarea class="form-control" id="continuousRequirements" rows="3" 
-                                                      placeholder="描述您希望续写的内容方向或特殊要求..."></textarea>
-                                        </div>
-                                        <button class="btn btn-success w-100" onclick="startQuickContinuation('continuous')">
-                                            <i class="fas fa-infinity me-2"></i>
-                                            开始持续写作
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <div class="mt-4">
-                            <div class="alert alert-info border-0">
-                                <div class="d-flex align-items-start">
-                                    <i class="fas fa-info-circle fa-2x text-info me-3 mt-1"></i>
-                                    <div>
-                                        <h6 class="alert-heading mb-2">快速续写说明</h6>
-                                        <ul class="mb-0 small">
-                                            <li><strong>指定章节数</strong>：系统将自动执行完整的续写流程（故事线生成 → 章节写作）直到完成指定数量的章节</li>
-                                            <li><strong>持续写作</strong>：系统将持续生成章节，支持三种模式：
-                                                <ul>
-                                                    <li><strong>自动模式</strong>：AI自主决定何时停止（最多50章）</li>
-                                                    <li><strong>无限模式</strong>：持续写作直到故事自然结束，无章节数限制</li>
-                                                    <li><strong>手动模式</strong>：每章完成后询问是否继续</li>
-                                                </ul>
-                                            </li>
-                                            <li><strong>智能结束检测</strong>：无限模式会自动检测故事结束点（如"完结"、"大结局"等关键词）</li>
-                                            <li><strong>自动保存</strong>：每章完成后会自动保存，您可以随时查看进度</li>
-                                            <li><strong>流程一致</strong>：快速续写使用与手动续写相同的AI工作流程，确保质量</li>
-                                        </ul>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    `;
-    
-    // 移除已存在的模态框
-    const existingModal = document.getElementById('quickContinuationModal');
-    if (existingModal) {
-        existingModal.remove();
-    }
-    
-    // 添加新的模态框
-    document.body.insertAdjacentHTML('beforeend', modalHtml);
-    
-    // 显示模态框
-    const modal = new bootstrap.Modal(document.getElementById('quickContinuationModal'));
-    modal.show();
-};
-
-// 开始快速续写
-window.startQuickContinuation = async (mode) => {
-    // 优先使用 selectedNovelId（续写选择页面），如果没有则使用 currentNovelId（工作流程页面）
-    const novelId = AppState.selectedNovelId || AppState.currentNovelId;
-    
-    if (!novelId) {
-        Utils.showMessage('没有活跃的小说项目', 'warning');
-        return;
-    }
-    
-    console.log('快速续写 - 使用小说ID:', novelId);
-    
-    try {
-        let config = {};
-        
-        if (mode === 'fixed') {
-            const chapterCount = parseInt(document.getElementById('chapterCount').value);
-            const requirements = document.getElementById('quickRequirements').value.trim();
-            
-            if (!chapterCount || chapterCount < 1 || chapterCount > 10) {
-                Utils.showMessage('请输入有效的章节数量（1-10）', 'warning');
-                return;
-            }
-            
-            config = {
-                mode: 'fixed',
-                chapter_count: chapterCount,
-                requirements: requirements
-            };
-        } else if (mode === 'continuous') {
-            const continuousMode = document.getElementById('continuousMode').value;
-            const requirements = document.getElementById('continuousRequirements').value.trim();
-            
-            config = {
-                mode: 'continuous',
-                continuous_mode: continuousMode,
-                requirements: requirements
-            };
-        }
-        
-        // 关闭模态框
-        const modal = bootstrap.Modal.getInstance(document.getElementById('quickContinuationModal'));
-        if (modal) {
-            modal.hide();
-        }
-        
-        Utils.showLoading('正在启动快速续写...');
-        
-        // 调用后端API启动快速续写
-        const response = await Utils.apiRequest(`/novels/${novelId}/continuation/quick`, {
-            method: 'POST',
-            body: JSON.stringify(config)
-        });
-        
-        if (response.success) {
-            Utils.showMessage('快速续写已启动！', 'success');
-            // 设置当前小说ID并跳转到快速续写进度页面
-            AppState.currentNovelId = novelId;
-            AppState.quickContinuationTaskId = response.data.task_id;
-            Navigation.showQuickContinuationProgress(novelId);
-        } else {
-            Utils.showMessage('启动快速续写失败: ' + (response.error || '未知错误'), 'danger');
-        }
-        
-    } catch (error) {
-        Utils.showMessage('启动快速续写失败: ' + error.message, 'danger');
-    } finally {
-        Utils.hideLoading();
-    }
-};
-
-// 检查快速续写进度
-window.checkQuickContinuationProgress = async () => {
-    const novelId = AppState.selectedNovelId || AppState.currentNovelId;
-    if (!novelId) {
-        Utils.showMessage('请先选择小说', 'warning');
-        return;
-    }
-    
-    try {
-        Utils.showLoading('检查快速续写进度...');
-        const response = await Utils.apiRequest(`/novels/${novelId}/continuation/quick/progress`);
-        
-        if (response.success) {
-            // 有进度数据，跳转到进度页面
-            AppState.quickContinuationProgress = response.data;
-            Navigation.showQuickContinuationProgress(novelId);
-            Utils.showMessage('找到快速续写任务，正在显示进度', 'success');
-        } else {
-            // 没有进度数据，询问是否启动新的快速续写
-            if (response.error === '未找到快速续写任务') {
-                const startNew = confirm('当前没有运行中的快速续写任务，是否启动新的快速续写？');
-                if (startNew) {
-                    showQuickContinuationDialog();
-                }
-            } else {
-                Utils.showMessage('检查进度失败: ' + response.error, 'danger');
-            }
-        }
-    } catch (error) {
-        Utils.showMessage('检查进度失败: ' + error.message, 'danger');
-    } finally {
-        Utils.hideLoading();
-    }
-};
-
-// 为指定小说检查快速续写进度
-window.checkQuickContinuationProgressForNovel = async (novelId) => {
-    try {
-        Utils.showLoading('检查快速续写进度...');
-        const response = await Utils.apiRequest(`/novels/${novelId}/continuation/quick/progress`);
-        
-        if (response.success) {
-            // 有进度数据，跳转到进度页面
-            AppState.quickContinuationProgress = response.data;
-            AppState.currentNovelId = novelId;
-            Navigation.showQuickContinuationProgress(novelId);
-            Utils.showMessage('找到快速续写任务，正在显示进度', 'success');
-        } else {
-            // 没有进度数据，询问是否启动新的快速续写
-            if (response.error === '未找到快速续写任务') {
-                const startNew = confirm('当前没有运行中的快速续写任务，是否启动新的快速续写？');
-                if (startNew) {
-                    AppState.selectedNovelId = novelId;
-                    showQuickContinuationDialog();
-                }
-            } else {
-                Utils.showMessage('检查进度失败: ' + response.error, 'danger');
-            }
-        }
-    } catch (error) {
-        Utils.showMessage('检查进度失败: ' + error.message, 'danger');
-    } finally {
-        Utils.hideLoading();
-    }
-};
-
-// 映射快速续写步骤到标准节点
-const mapQuickStepToNode = (quickStep) => {
-    if (quickStep.includes('generating_storyline')) return 'storyline_generation';
-    if (quickStep.includes('assessing_storyline_quality')) return 'quality_assessment';
-    if (quickStep.includes('improving_storyline')) return 'storyline_improvement';
-    if (quickStep.includes('writing_chapter')) return 'chapter_writing';
-    if (quickStep.includes('assessing_chapter_quality')) return 'chapter_quality_assessment';
-    if (quickStep.includes('improving_chapter')) return 'content_improvement';
-    if (quickStep.includes('saving_chapter')) return 'chapter_save';
-    if (quickStep.includes('chapter_completed')) return 'chapter_completed';
-    if (quickStep === 'completed') return 'chapter_completed';
-    if (quickStep === 'starting' || quickStep === 'initializing') return 'storyline_generation';
-    return 'storyline_generation'; // 默认
-};
-
-// 显示快速续写进度（8节点流程图）
-const displayQuickContinuationProgress = (progress) => {
-    const container = document.getElementById('quick-continuation-progress-container');
-    if (!container) return;
-    
-    const statusColors = {
-        'running': 'primary',
-        'completed': 'success',
-        'failed': 'danger',
-        'paused': 'warning',
-        'stopped': 'secondary'
-    };
-    
-    const statusTexts = {
-        'running': '运行中',
-        'completed': '已完成',
-        'failed': '失败',
-        'paused': '已暂停',
-        'stopped': '已停止'
-    };
-    
-    // 为所有字段提供默认值，确保容错处理
-    const safeProgress = {
-        novel_id: progress.novel_id || 'unknown',
-        novel_title: progress.novel_title || '未知小说',
-        mode: progress.mode || 'fixed',
-        continuous_mode: progress.continuous_mode || 'auto',
-        total_chapters: progress.total_chapters || 0,
-        completed_chapters: progress.completed_chapters || 0,
-        current_chapter: progress.current_chapter || 1,
-        current_step: progress.current_step || 'unknown',
-        status: progress.status || 'unknown',
-        start_time: progress.start_time || '',
-        last_update: progress.last_update || '',
-        error_message: progress.error_message || '',
-        chapter_details: progress.chapter_details || []
-    };
-    
-    const progressPercentage = safeProgress.total_chapters > 0 ? 
-        Math.round((safeProgress.completed_chapters / safeProgress.total_chapters) * 100) : 0;
-    
-    // 映射当前步骤到节点
-    const currentNode = mapQuickStepToNode(safeProgress.current_step);
-    
-    // 定义8个节点
-    const nodes = [
-        { key: 'storyline_generation', name: '故事线生成', icon: 'fas fa-route' },
-        { key: 'quality_assessment', name: '质量评估', icon: 'fas fa-clipboard-check' },
-        { key: 'storyline_improvement', name: '故事线优化', icon: 'fas fa-magic', conditional: true },
-        { key: 'chapter_writing', name: '章节写作', icon: 'fas fa-pen-fancy' },
-        { key: 'chapter_quality_assessment', name: '章节评估', icon: 'fas fa-search' },
-        { key: 'content_improvement', name: '内容优化', icon: 'fas fa-edit', conditional: true },
-        { key: 'chapter_save', name: '章节保存', icon: 'fas fa-save' },
-        { key: 'chapter_completed', name: '完成', icon: 'fas fa-flag-checkered' }
-    ];
-    
-    // 生成节点HTML
-    const nodesHtml = nodes.map((node, index) => {
-        let nodeStatus = 'pending';
-        
-        // 确定节点状态
-        const currentNodeIndex = nodes.findIndex(n => n.key === currentNode);
-        
-        if (index < currentNodeIndex) {
-            nodeStatus = 'completed';
-        } else if (index === currentNodeIndex) {
-            nodeStatus = 'current';
-        } else {
-            nodeStatus = 'pending';
-        }
-        
-        // 对于条件性节点，检查是否被跳过
-        if (node.conditional && index < currentNodeIndex) {
-            // 检查是否实际执行了这个步骤
-            const wasExecuted = safeProgress.current_step.includes(node.key.split('_')[0]);
-            if (!wasExecuted) {
-                nodeStatus = 'skipped';
-            }
-        }
-        
-        return `
-            <div class="process-node ${nodeStatus}">
-                <div class="node-icon">
-                    <i class="${node.icon}"></i>
-                </div>
-                <div class="node-content">
-                    <div class="node-title">${node.name}</div>
-                    ${node.conditional ? '<div class="node-badge">按需</div>' : ''}
-                </div>
-                <div class="node-status">
-                    ${nodeStatus === 'completed' ? '<i class="fas fa-check-circle text-success"></i>' :
-                      nodeStatus === 'current' ? '<i class="fas fa-play-circle text-primary"></i>' :
-                      nodeStatus === 'skipped' ? '<i class="fas fa-forward text-warning"></i>' :
-                      '<i class="fas fa-circle text-muted"></i>'}
-                </div>
-                ${index < nodes.length - 1 ? '<div class="node-connector"></div>' : ''}
-            </div>
-        `;
-    }).join('');
-
-    container.innerHTML = `
-        <div class="quick-continuation-progress">
-            <!-- 任务信息卡片 -->
-            <div class="card border-0 shadow-sm mb-4">
-                <div class="card-header bg-${statusColors[safeProgress.status] || 'secondary'} text-white">
-                    <div class="d-flex justify-content-between align-items-center">
-                        <h4 class="mb-0">
-                            <i class="fas fa-bolt me-2"></i>快速续写进度
-                        </h4>
-                        <div class="workflow-nav-buttons">
-                            <button type="button" class="btn btn-light btn-sm me-2" onclick="goToContinuationNovelList()">
-                                <i class="fas fa-arrow-left me-1"></i>返回续写列表
-                            </button>
-                            <button type="button" class="btn btn-outline-light btn-sm" onclick="goToHome()">
-                                <i class="fas fa-home me-1"></i>首页
-                            </button>
-                        </div>
-                    </div>
-                </div>
-                <div class="card-body">
-                    <div class="row">
-                        <div class="col-md-8">
-                            <h5 class="card-title">${safeProgress.novel_title}</h5>
-                            <div class="row mb-3">
-                                <div class="col-sm-6">
-                                    <div class="info-item">
-                                        <i class="fas fa-cog text-primary me-2"></i>
-                                        <strong>模式:</strong> ${safeProgress.mode === 'fixed' ? '指定章节数' : 
-                                            (safeProgress.continuous_mode === 'infinite' ? '无限续写' : 
-                                            (safeProgress.continuous_mode === 'auto' ? '自动模式' : '手动模式'))}
-                                    </div>
-                                </div>
-                                <div class="col-sm-6">
-                                    <div class="info-item">
-                                        <i class="fas fa-clock text-info me-2"></i>
-                                        <strong>状态:</strong> 
-                                        <span class="badge bg-${statusColors[safeProgress.status] || 'secondary'}">${statusTexts[safeProgress.status] || '未知'}</span>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="row mb-3">
-                                <div class="col-sm-6">
-                                    <div class="info-item">
-                                        <i class="fas fa-chapter text-success me-2"></i>
-                                        <strong>进度:</strong> ${safeProgress.completed_chapters}/${safeProgress.total_chapters} 章
-                                    </div>
-                                </div>
-                                <div class="col-sm-6">
-                                    <div class="info-item">
-                                        <i class="fas fa-play text-warning me-2"></i>
-                                        <strong>当前:</strong> 第${safeProgress.current_chapter}章
-                                    </div>
-                                </div>
-                            </div>
-                            
-                            <!-- 8节点流程图 -->
-                            <div class="process-flow mb-3">
-                                <h6 class="mb-3"><i class="fas fa-sitemap me-2"></i>当前章节执行流程</h6>
-                                <div class="process-nodes">
-                                    ${nodesHtml}
-                                </div>
-                            </div>
-                            
-                            ${safeProgress.error_message ? `
-                                <div class="alert alert-danger">
-                                    <i class="fas fa-exclamation-triangle me-2"></i>
-                                    ${safeProgress.error_message}
-                                </div>
-                            ` : ''}
-                        </div>
-                        <div class="col-md-4">
-                            <div class="task-controls">
-                                <h6 class="mb-3">任务控制</h6>
-                                ${safeProgress.status === 'running' ? `
-                                    <button class="btn btn-warning btn-sm w-100 mb-2" onclick="QuickContinuationManager.pauseTask('${safeProgress.novel_id}')">
-                                        <i class="fas fa-pause me-2"></i>暂停任务
-                                    </button>
-                                    <button class="btn btn-danger btn-sm w-100" onclick="QuickContinuationManager.stopTask('${safeProgress.novel_id}')">
-                                        <i class="fas fa-stop me-2"></i>停止任务
-                                    </button>
-                                ` : safeProgress.status === 'paused' ? `
-                                    <button class="btn btn-success btn-sm w-100 mb-2" onclick="QuickContinuationManager.resumeTask('${safeProgress.novel_id}')">
-                                        <i class="fas fa-play me-2"></i>恢复任务
-                                    </button>
-                                    <button class="btn btn-danger btn-sm w-100" onclick="QuickContinuationManager.stopTask('${safeProgress.novel_id}')">
-                                        <i class="fas fa-stop me-2"></i>停止任务
-                                    </button>
-                                ` : safeProgress.status === 'completed' ? `
-                                    <button class="btn btn-primary btn-sm w-100 mb-2" onclick="Navigation.showContinuationWorkflow('${safeProgress.novel_id}')">
-                                        <i class="fas fa-eye me-2"></i>查看续写结果
-                                    </button>
-                                    <button class="btn btn-success btn-sm w-100" onclick="showQuickContinuationDialog()">
-                                        <i class="fas fa-plus me-2"></i>继续续写
-                                    </button>
-                                ` : `
-                                    <button class="btn btn-primary btn-sm w-100" onclick="showQuickContinuationDialog()">
-                                        <i class="fas fa-redo me-2"></i>重新开始
-                                    </button>
-                                `}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- 章节详情 -->
-            ${safeProgress.chapter_details && safeProgress.chapter_details.length > 0 ? `
-                <div class="card border-0 shadow-sm">
-                    <div class="card-header">
-                        <h5 class="mb-0">
-                            <i class="fas fa-list me-2"></i>章节详情
-                        </h5>
-                    </div>
-                    <div class="card-body">
-                        <div class="row">
-                            ${safeProgress.chapter_details.map(chapter => `
-                                <div class="col-md-4 mb-3">
-                                    <div class="chapter-detail-card">
-                                        <div class="d-flex align-items-center">
-                                            <div class="chapter-number me-3">
-                                                <span class="badge bg-primary">第${chapter.chapter_number || '?'}章</span>
-                                            </div>
-                                            <div class="chapter-status">
-                                                <i class="fas fa-check-circle text-success"></i>
-                                                <small class="text-muted ms-1">${Utils.formatDate(chapter.completed_at || '')}</small>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            `).join('')}
-                        </div>
-                    </div>
-                </div>
-            ` : ''}
-        </div>
-    `;
-};
-
-// 更新快速续写进度
-const updateQuickContinuationProgress = (progress) => {
-    // 更新进度条
-    const progressBar = document.querySelector('.progress-bar');
-    if (progressBar) {
-        const progressPercentage = progress.total_chapters > 0 ? 
-            Math.round((progress.completed_chapters / progress.total_chapters) * 100) : 0;
-        progressBar.style.width = `${progressPercentage}%`;
-        progressBar.textContent = `${progressPercentage}%`;
-        progressBar.className = `progress-bar bg-${getStatusColor(progress.status)}`;
-    }
-    
-    // 更新状态
-    const statusBadge = document.querySelector('.badge');
-    if (statusBadge) {
-        statusBadge.className = `badge bg-${getStatusColor(progress.status)}`;
-        statusBadge.textContent = getStatusText(progress.status);
-    }
-    
-    // 更新当前步骤
-    const currentStepElement = document.querySelector('.info-item:last-child');
-    if (currentStepElement) {
-        console.log('更新当前步骤:', progress.current_step, '章节:', progress.current_chapter);
-        currentStepElement.innerHTML = `
-            <i class="fas fa-play text-warning me-2"></i>
-            <strong>当前:</strong> 第${progress.current_chapter}章 - ${getQuickContinuationStepDisplayName(progress.current_step)}
-        `;
-    }
-    
-    // 修复：更新章节详情列表
-    updateChapterDetailsList(progress);
-    
-    // 更新错误信息
-    if (progress.error_message) {
-        let errorAlert = document.querySelector('.alert-danger');
-        if (!errorAlert) {
-            const progressContainer = document.querySelector('.quick-continuation-progress .card-body .row .col-md-8');
-            if (progressContainer) {
-                progressContainer.insertAdjacentHTML('beforeend', `
-                    <div class="alert alert-danger">
-                        <i class="fas fa-exclamation-triangle me-2"></i>
-                        ${progress.error_message}
-                    </div>
-                `);
-            }
+        } else if (key === "arrowright" || key === "pagedown" || key === " ") {
+            e.preventDefault();
+            App.go(`#/novel/${r.novelId}/chapter/${r.n + 1}`);
+        } else if (key === "f") {
+            e.preventDefault();
+            App.toggleFullscreen();
+        } else if (key === "e") {
+            e.preventDefault();
+            App.toggleChapterEdit();
+        } else if (key === "escape" && State.reader.fullscreen) {
+            e.preventDefault();
+            App.toggleFullscreen();
         }
     }
-};
+}
 
-// 更新章节详情列表
-const updateChapterDetailsList = (progress) => {
-    // 查找章节详情容器
-    const chapterDetailsContainer = document.querySelector('.quick-continuation-progress .card:last-child .card-body .row');
-    
-    if (chapterDetailsContainer && progress.chapter_details && progress.chapter_details.length > 0) {
-        console.log('更新章节详情列表，章节数:', progress.chapter_details.length);
-        
-        // 重新渲染章节详情列表
-        chapterDetailsContainer.innerHTML = progress.chapter_details.map(chapter => `
-            <div class="col-md-4 mb-3">
-                <div class="chapter-detail-card">
-                    <div class="d-flex align-items-center">
-                        <div class="chapter-number me-3">
-                            <span class="badge bg-primary">第${chapter.chapter_number}章</span>
-                        </div>
-                        <div class="chapter-status">
-                            <i class="fas fa-check-circle text-success"></i>
-                            <small class="text-muted ms-1">${Utils.formatDate(chapter.completed_at)}</small>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `).join('');
-        
-        console.log('章节详情列表已更新');
-    } else if (progress.chapter_details && progress.chapter_details.length > 0) {
-        // 如果章节详情容器不存在，但有待显示的章节，则重新渲染整个章节详情卡片
-        console.log('章节详情容器不存在，重新渲染章节详情卡片');
-        renderChapterDetailsCard(progress);
-    }
-};
+// 用 capture 阶段保证最早接收事件
+window.addEventListener("keydown", _handleHotkey, true);
 
-// 渲染章节详情卡片
-const renderChapterDetailsCard = (progress) => {
-    const quickContinuationProgress = document.querySelector('.quick-continuation-progress');
-    if (!quickContinuationProgress) return;
-    
-    // 查找现有的章节详情卡片
-    let chapterDetailsCard = quickContinuationProgress.querySelector('.card:last-child');
-    
-    // 如果章节详情卡片不存在，创建新的
-    if (!chapterDetailsCard || !chapterDetailsCard.querySelector('.card-header h5').textContent.includes('章节详情')) {
-        chapterDetailsCard = document.createElement('div');
-        chapterDetailsCard.className = 'card border-0 shadow-sm';
-        quickContinuationProgress.appendChild(chapterDetailsCard);
-    }
-    
-    // 更新章节详情卡片内容
-    chapterDetailsCard.innerHTML = `
-        <div class="card-header">
-            <h5 class="mb-0">
-                <i class="fas fa-list me-2"></i>章节详情
-            </h5>
-        </div>
-        <div class="card-body">
-            <div class="row">
-                ${progress.chapter_details.map(chapter => `
-                    <div class="col-md-4 mb-3">
-                        <div class="chapter-detail-card">
-                            <div class="d-flex align-items-center">
-                                <div class="chapter-number me-3">
-                                    <span class="badge bg-primary">第${chapter.chapter_number}章</span>
-                                </div>
-                                <div class="chapter-status">
-                                    <i class="fas fa-check-circle text-success"></i>
-                                    <small class="text-muted ms-1">${Utils.formatDate(chapter.completed_at)}</small>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                `).join('')}
-            </div>
-        </div>
-    `;
-    
-    console.log('章节详情卡片已重新渲染');
-};
-
-// 获取状态颜色
-const getStatusColor = (status) => {
-    const colors = {
-        'running': 'primary',
-        'completed': 'success',
-        'failed': 'danger',
-        'paused': 'warning',
-        'stopped': 'secondary'
-    };
-    return colors[status] || 'secondary';
-};
-
-// 获取状态文本
-const getStatusText = (status) => {
-    const texts = {
-        'running': '运行中',
-        'completed': '已完成',
-        'failed': '失败',
-        'paused': '已暂停',
-        'stopped': '已停止'
-    };
-    return texts[status] || '未知';
-};
-
-// 获取快速续写步骤显示名称
-const getQuickContinuationStepDisplayName = (step) => {
-    const stepNames = {
-        'initializing': '初始化中',
-        'starting': '启动中',
-        'generating_storyline_chapter_': '生成故事线',
-        'improving_storyline_chapter_': '改进故事线',
-        'assessing_storyline_quality_chapter_': '评估故事线质量',
-        'writing_chapter_': '写作章节',
-        'assessing_chapter_quality_chapter_': '评估章节质量',
-        'saving_chapter_': '保存章节',
-        'chapter_completed_': '章节完成',
-        'completed': '已完成',
-        'failed': '失败',
-        'paused': '已暂停',
-        'stopped': '已停止'
-    };
-    
-    // 添加调试信息
-    console.log('步骤名称映射:', step, '->', stepNames);
-    
-    for (const [key, value] of Object.entries(stepNames)) {
-        if (step.startsWith(key)) {
-            console.log('匹配到步骤:', key, '->', value);
-            return value;
-        }
-    }
-    
-    console.log('未匹配到步骤，返回原始值:', step);
-    return step;
-};
-
-// 查看章节工作流
-window.viewChapterWorkflow = async (novelId, chapterNumber) => {
-    try {
-        Utils.showLoading('加载章节工作流...');
-        
-        // 获取各个模块的具体内容
-        const workflowData = await loadWorkflowModules(novelId, chapterNumber);
-        
-        // 显示章节工作流模态框
-        showChapterWorkflowModal(novelId, chapterNumber, workflowData);
-        
-    } catch (error) {
-        Utils.showMessage('加载章节工作流失败: ' + error.message, 'danger');
-    } finally {
-        Utils.hideLoading();
-    }
-};
-
-// 显示章节工作流模态框
-const showChapterWorkflowModal = (novelId, chapterNumber, workflowData) => {
-    const modalHtml = `
-        <div class="modal fade" id="chapterWorkflowModal" tabindex="-1">
-            <div class="modal-dialog modal-xl">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h5 class="modal-title">
-                            <i class="fas fa-cogs me-2"></i>
-                            第${chapterNumber}章工作流程
-                        </h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                    </div>
-                    <div class="modal-body">
-                        <div class="workflow-modules">
-                            <!-- 故事线模块 - 全宽显示 -->
-                            <div class="row mb-4">
-                                <div class="col-12">
-                                    <div class="workflow-module card">
-                                        <div class="card-header bg-primary text-white">
-                                            <h6 class="mb-0"><i class="fas fa-route me-2"></i>故事线</h6>
-                                        </div>
-                                        <div class="card-body">
-                                            ${workflowData.storyline ? `
-                                                <div class="storyline-content">
-                                                    <div class="row">
-                                                        <div class="col-md-8">
-                                                            <h5 class="text-primary mb-3">${workflowData.storyline.chapter_title || '未知章节'}</h5>
-                                                            <div class="storyline-details">
-                                                                <div class="mb-3">
-                                                                    <h6 class="text-secondary">章节概要</h6>
-                                                                    <div class="chapter-summary p-3 bg-light rounded">
-                                                                        ${workflowData.storyline.chapter_summary || '暂无概要'}
-                                                                    </div>
-                                                                </div>
-                                                                <div class="mb-3">
-                                                                    <h6 class="text-secondary">关键事件</h6>
-                                                                    <div class="key-events p-3 bg-light rounded">
-                                                                        ${Array.isArray(workflowData.storyline.key_events) ? 
-                                                                            workflowData.storyline.key_events.map(event => `<div class="event-item mb-2">• ${event}</div>`).join('') : 
-                                                                            (workflowData.storyline.key_events || '暂无关键事件')}
-                                                                    </div>
-                                                                </div>
-                                                                ${workflowData.storyline.character_development ? `
-                                                                    <div class="mb-3">
-                                                                        <h6 class="text-secondary">人物发展</h6>
-                                                                        <div class="character-development p-3 bg-light rounded">
-                                                                            ${workflowData.storyline.character_development}
-                                                                        </div>
-                                                                    </div>
-                                                                ` : ''}
-                                                                ${workflowData.storyline.foreshadowing && workflowData.storyline.foreshadowing.length > 0 ? `
-                                                                    <div class="mb-3">
-                                                                        <h6 class="text-secondary">伏笔设置</h6>
-                                                                        <div class="foreshadowing p-3 bg-light rounded">
-                                                                            ${workflowData.storyline.foreshadowing.map(foreshadow => `<div class="foreshadow-item mb-2">• ${foreshadow}</div>`).join('')}
-                                                                        </div>
-                                                                    </div>
-                                                                ` : ''}
-                                                                ${workflowData.storyline.next_chapter_hint ? `
-                                                                    <div class="mb-3">
-                                                                        <h6 class="text-secondary">下章预告</h6>
-                                                                        <div class="next-chapter-hint p-3 bg-light rounded">
-                                                                            ${workflowData.storyline.next_chapter_hint}
-                                                                        </div>
-                                                                    </div>
-                                                                ` : ''}
-                                                            </div>
-                                                        </div>
-                                                        <div class="col-md-4">
-                                                            <div class="chapter-info-section">
-                                                                <h6 class="text-secondary mb-3">章节信息</h6>
-                                                                <div class="chapter-info p-3 bg-light rounded">
-                                                                    <div class="mb-2">
-                                                                        <strong>章节号:</strong><br>
-                                                                        <span class="text-muted">第${chapterNumber}章</span>
-                                                                    </div>
-                                                                    <div class="mb-2">
-                                                                        <strong>字数:</strong><br>
-                                                                        <span class="text-muted">${workflowData.storyline.word_count || '未知'}字</span>
-                                                                    </div>
-                                                                    <div class="mb-2">
-                                                                        <strong>创建时间:</strong><br>
-                                                                        <span class="text-muted">${Utils.formatDate(workflowData.storyline.created_at)}</span>
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            ` : `
-                                                <div class="text-muted text-center py-5">
-                                                    <i class="fas fa-exclamation-circle me-2"></i>
-                                                    暂无故事线数据
-                                                </div>
-                                            `}
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                            
-                            <!-- 评价和正文评价模块 -->
-                            <div class="row mb-4">
-                                <!-- 评价模块 -->
-                                <div class="col-md-6">
-                                    <div class="workflow-module card h-100">
-                                        <div class="card-header bg-warning text-dark">
-                                            <h6 class="mb-0"><i class="fas fa-star me-2"></i>故事线评价</h6>
-                                        </div>
-                                        <div class="card-body">
-                                            ${workflowData.storylineQuality ? `
-                                                <div class="quality-content">
-                                                    <div class="quality-score mb-3 text-center">
-                                                        <span class="badge bg-info fs-5 px-3 py-2">
-                                                            综合评分: ${workflowData.storylineQuality.overall_score || '未知'}分
-                                                        </span>
-                                                    </div>
-                                                    <div class="evaluation-details">
-                                                        <div class="mb-3">
-                                                            <h6 class="text-secondary">各维度评分</h6>
-                                                            <div class="scores-grid">
-                                                                ${workflowData.storylineQuality.scores ? Object.entries(workflowData.storylineQuality.scores).map(([key, value]) => `
-                                                                    <div class="score-item d-flex justify-content-between mb-1">
-                                                                        <span class="text-muted">${getScoreLabel(key)}:</span>
-                                                                        <span class="badge bg-secondary">${value}分</span>
-                                                                    </div>
-                                                                `).join('') : ''}
-                                                            </div>
-                                                        </div>
-                                                        
-                                                        ${workflowData.storylineQuality.strengths && workflowData.storylineQuality.strengths.length > 0 ? `
-                                                            <div class="strengths mb-3">
-                                                                <h6 class="text-success">优点</h6>
-                                                                <ul class="list-unstyled">
-                                                                    ${workflowData.storylineQuality.strengths.map(strength => `<li class="mb-1"><i class="fas fa-check-circle me-2 text-success"></i>${strength}</li>`).join('')}
-                                                                </ul>
-                                                            </div>
-                                                        ` : ''}
-                                                        
-                                                        ${workflowData.storylineQuality.weaknesses && workflowData.storylineQuality.weaknesses.length > 0 ? `
-                                                            <div class="weaknesses">
-                                                                <h6 class="text-warning">改进建议</h6>
-                                                                <ul class="list-unstyled">
-                                                                    ${workflowData.storylineQuality.weaknesses.map(weakness => `<li class="mb-1"><i class="fas fa-lightbulb me-2 text-warning"></i>${weakness}</li>`).join('')}
-                                                                </ul>
-                                                            </div>
-                                                        ` : ''}
-                                                    </div>
-                                                </div>
-                                            ` : `
-                                                <div class="text-muted text-center py-3">
-                                                    <i class="fas fa-exclamation-circle me-2"></i>
-                                                    暂无评价数据
-                                                </div>
-                                            `}
-                                        </div>
-                                    </div>
-                                </div>
-                                
-                                <!-- 正文评价模块 -->
-                                <div class="col-md-6">
-                                    <div class="workflow-module card h-100">
-                                        <div class="card-header bg-info text-white">
-                                            <h6 class="mb-0"><i class="fas fa-file-alt me-2"></i>正文评价</h6>
-                                        </div>
-                                        <div class="card-body">
-                                            ${workflowData.chapterQuality ? `
-                                                <div class="chapter-quality-content">
-                                                    <div class="quality-score mb-3 text-center">
-                                                        <span class="badge ${workflowData.chapterQuality.overall_score >= 80 ? 'bg-success' : workflowData.chapterQuality.overall_score >= 60 ? 'bg-warning' : 'bg-danger'} fs-5 px-3 py-2">
-                                                            ${chapterNumber === 1 ? '故事线质量' : '续写质量'}: ${workflowData.chapterQuality.overall_score}分
-                                                        </span>
-                                                    </div>
-                                                    <div class="evaluation-details">
-                                                        <div class="mb-3">
-                                                            <h6 class="text-secondary">各维度评分</h6>
-                                                            <div class="scores-grid">
-                                                                ${chapterNumber === 1 ? 
-                                                                    // 第一章显示故事线评分
-                                                                    (workflowData.chapterQuality.scores ? Object.entries(workflowData.chapterQuality.scores).map(([key, value]) => `
-                                                                        <div class="score-item d-flex justify-content-between mb-1">
-                                                                            <span class="text-muted">${getScoreLabel(key)}:</span>
-                                                                            <span class="badge bg-secondary">${value}分</span>
-                                                                        </div>
-                                                                    `).join('') : '') :
-                                                                    // 续写章节显示章节评分
-                                                                    (workflowData.chapterQuality.dimensions ? Object.entries(workflowData.chapterQuality.dimensions).map(([key, value]) => `
-                                                                        <div class="score-item d-flex justify-content-between mb-1">
-                                                                            <span class="text-muted">${getChapterScoreLabel(key)}:</span>
-                                                                            <span class="badge bg-secondary">${value}分</span>
-                                                                        </div>
-                                                                    `).join('') : '')
-                                                                }
-                                                            </div>
-                                                        </div>
-                                                        
-                                                        ${chapterNumber === 1 ? 
-                                                            // 第一章显示故事线的优点和缺点
-                                                            (workflowData.chapterQuality.strengths && workflowData.chapterQuality.strengths.length > 0 ? `
-                                                                <div class="strengths mb-3">
-                                                                    <h6 class="text-success">优点</h6>
-                                                                    <ul class="list-unstyled">
-                                                                        ${workflowData.chapterQuality.strengths.map(strength => `<li class="mb-1"><i class="fas fa-check-circle me-2 text-success"></i>${strength}</li>`).join('')}
-                                                                    </ul>
-                                                                </div>
-                                                            ` : '') +
-                                                            (workflowData.chapterQuality.weaknesses && workflowData.chapterQuality.weaknesses.length > 0 ? `
-                                                                <div class="weaknesses">
-                                                                    <h6 class="text-warning">改进建议</h6>
-                                                                    <ul class="list-unstyled">
-                                                                        ${workflowData.chapterQuality.weaknesses.map(weakness => `<li class="mb-1"><i class="fas fa-lightbulb me-2 text-warning"></i>${weakness}</li>`).join('')}
-                                                                    </ul>
-                                                                </div>
-                                                            ` : '') :
-                                                            // 续写章节显示改进建议
-                                                            (workflowData.chapterQuality.suggestions && workflowData.chapterQuality.suggestions.length > 0 ? `
-                                                                <div class="suggestions">
-                                                                    <h6 class="text-info">改进建议</h6>
-                                                                    <ul class="list-unstyled">
-                                                                        ${workflowData.chapterQuality.suggestions.map(suggestion => `<li class="mb-1"><i class="fas fa-lightbulb me-2 text-info"></i>${suggestion}</li>`).join('')}
-                                                                    </ul>
-                                                                </div>
-                                                            ` : '')
-                                                        }
-                                                    </div>
-                                                </div>
-                                            ` : `
-                                                <div class="text-muted text-center py-3">
-                                                    <i class="fas fa-exclamation-circle me-2"></i>
-                                                    暂无正文评价数据
-                                                </div>
-                                            `}
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                            
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    `;
-    
-    // 移除已存在的模态框
-    const existingModal = document.getElementById('chapterWorkflowModal');
-    if (existingModal) {
-        existingModal.remove();
-    }
-    
-    // 添加新模态框到页面
-    document.body.insertAdjacentHTML('beforeend', modalHtml);
-    
-    // 显示模态框
-    const modal = new bootstrap.Modal(document.getElementById('chapterWorkflowModal'));
-    modal.show();
-};
-
-// 获取步骤显示名称
-const getStepDisplayName = (stepKey) => {
-    const stepNames = {
-        'tag_selection': '标签选择',
-        'character_creation': '人物创建',
-        'storyline_generation': '故事线生成',
-        'knowledge_graph_creation': '知识图谱创建',
-        'chapter_writing': '章节写作'
-    };
-    return stepNames[stepKey] || stepKey;
-};
-
-// 获取步骤描述
-const getStepDescription = (stepKey) => {
-    const stepDescriptions = {
-        'tag_selection': '选择小说的类型、风格和主题标签',
-        'character_creation': '创建主要角色和配角',
-        'storyline_generation': '生成故事大纲和情节发展',
-        'knowledge_graph_creation': '构建故事世界知识图谱',
-        'chapter_writing': '根据大纲创作具体章节内容'
-    };
-    return stepDescriptions[stepKey] || '工作流程步骤';
-};
-
-// 获取状态显示名称
-const getStatusDisplayName = (status) => {
-    const statusNames = {
-        'completed': '已完成',
-        'in_progress': '进行中',
-        'pending': '待处理',
-        'failed': '失败'
-    };
-    return statusNames[status] || status;
-};
-
-// 获取评分标签的中文名称
-const getScoreLabel = (key) => {
-    const labels = {
-        'coherence': '连贯性',
-        'coordination': '协调性', 
-        'structure': '结构',
-        'conflict': '冲突',
-        'innovation': '创新性'
-    };
-    return labels[key] || key;
-};
-
-// 获取章节评分标签的中文名称
-const getChapterScoreLabel = (key) => {
-    const labels = {
-        'character_consistency': '人物一致性',
-        'plot_continuity': '情节连续性',
-        'world_consistency': '世界观一致性',
-        'foreshadowing_continuity': '伏笔连续性',
-        'style_consistency': '风格一致性'
-    };
-    return labels[key] || key;
-};
-
-// 加载工作流模块数据
-const loadWorkflowModules = async (novelId, chapterNumber) => {
-    const modules = {};
-    
-    // 1. 故事线 - 根据章节号获取对应的章节数据
-    try {
-        const chapterResponse = await Utils.apiRequest(`/novels/${novelId}/chapters`);
-        if (chapterResponse.success && chapterResponse.data) {
-            // 查找对应章节的数据
-            const targetChapter = chapterResponse.data.find(chapter => chapter.chapter_number === chapterNumber);
-            if (targetChapter) {
-                modules.storyline = {
-                    chapter_title: targetChapter.title,
-                    chapter_summary: targetChapter.summary,
-                    key_events: targetChapter.key_events,
-                    character_development: targetChapter.character_development,
-                    foreshadowing: targetChapter.foreshadowing,
-                    next_chapter_hint: targetChapter.next_chapter_hint,
-                    word_count: targetChapter.word_count
-                };
-            } else {
-                modules.storyline = null;
-            }
-        } else {
-            modules.storyline = null;
-        }
-    } catch (error) {
-        modules.storyline = null;
-    }
-    
-    // 2. 评价（原始故事线质量评估）
-    try {
-        const storylineQualityResponse = await Utils.apiRequest(`/novels/${novelId}/data/storyline_quality_assessment`);
-        modules.storylineQuality = storylineQualityResponse.success ? storylineQualityResponse.data : null;
-    } catch (error) {
-        modules.storylineQuality = null;
-    }
-    
-    // 3. 正文评价（根据章节号显示不同的评价）
-    try {
-        if (chapterNumber === 1) {
-            // 第一章显示原始故事线评价
-            const storylineQualityResponse = await Utils.apiRequest(`/novels/${novelId}/data/storyline_quality_assessment`);
-            modules.chapterQuality = storylineQualityResponse.success ? storylineQualityResponse.data : null;
-        } else {
-            // 续写章节显示续写章节评价
-            const chapterQualityResponse = await Utils.apiRequest(`/novels/${novelId}/data/continuation_chapter_quality_assessment`);
-            modules.chapterQuality = chapterQualityResponse.success ? chapterQualityResponse.data : null;
-        }
-    } catch (error) {
-        modules.chapterQuality = null;
-    }
-    
-    
-    return modules;
-};
-
-
-// 全局函数
-window.toggleContinuationEditMode = ContinuationEditModeManager.toggleEditMode;
-window.saveContinuationStorylineContent = ContinuationContentSaveManager.saveStorylineContent;
-
-// 删除章节功能
-window.deleteChapter = async (novelId, chapterNumber, chapterTitle) => {
-    try {
-        // 显示确认对话框
-        const confirmed = await showDeleteConfirmDialog(
-            '删除章节',
-            `确定要删除 "${chapterTitle}" 吗？此操作不可撤销。`,
-            'danger'
-        );
-        
-        if (!confirmed) {
-            return;
-        }
-        
-        Utils.showLoading('正在删除章节...');
-        
-        // 调用删除API
-        const response = await Utils.apiRequest(`/novels/${novelId}/chapters/${chapterNumber}`, {
-            method: 'DELETE'
-        });
-        
-        if (response.success) {
-            Utils.showMessage(`章节 "${chapterTitle}" 删除成功！`, 'success');
-            
-            // 刷新章节列表
-            showChapterSelectionForEdit();
-        } else {
-            throw new Error(response.error || '删除章节失败');
-        }
-        
-    } catch (error) {
-        Utils.showMessage('删除章节失败: ' + error.message, 'danger');
-    } finally {
-        Utils.hideLoading();
-    }
-};
-
-// 删除小说功能
-window.deleteNovel = async (novelId, novelTitle) => {
-    try {
-        // 显示确认对话框
-        const confirmed = await showDeleteConfirmDialog(
-            '删除小说',
-            `确定要删除小说 "${novelTitle}" 吗？这将删除所有章节和相关数据，此操作不可撤销！`,
-            'danger'
-        );
-        
-        if (!confirmed) {
-            return;
-        }
-        
-        Utils.showLoading('正在删除小说...');
-        
-        // 调用删除API
-        const response = await Utils.apiRequest(`/novels/${novelId}`, {
-            method: 'DELETE'
-        });
-        
-        if (response.success) {
-            Utils.showMessage(`小说 "${novelTitle}" 删除成功！`, 'success');
-            
-            // 返回小说列表
-            Navigation.goToNovelList();
-            loadNovelList();
-        } else {
-            throw new Error(response.error || '删除小说失败');
-        }
-        
-    } catch (error) {
-        Utils.showMessage('删除小说失败: ' + error.message, 'danger');
-    } finally {
-        Utils.hideLoading();
-    }
-};
-
-// 显示删除确认对话框
-const showDeleteConfirmDialog = (title, message, type = 'warning') => {
-    return new Promise((resolve) => {
-        const modalHtml = `
-            <div class="modal fade" id="deleteConfirmModal" tabindex="-1">
-                <div class="modal-dialog">
-                    <div class="modal-content">
-                        <div class="modal-header bg-${type} text-white">
-                            <h5 class="modal-title">
-                                <i class="fas fa-exclamation-triangle me-2"></i>${title}
-                            </h5>
-                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-                        </div>
-                        <div class="modal-body">
-                            <p class="mb-0">${message}</p>
-                        </div>
-                        <div class="modal-footer">
-                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                            <button type="button" class="btn btn-${type}" id="confirmDeleteBtn">确认删除</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `;
-        
-        // 移除现有模态框
-        const existingModal = document.getElementById('deleteConfirmModal');
-        if (existingModal) {
-            existingModal.remove();
-        }
-        
-        // 添加新模态框
-        document.body.insertAdjacentHTML('beforeend', modalHtml);
-        
-        const modal = new bootstrap.Modal(document.getElementById('deleteConfirmModal'));
-        
-        // 绑定确认按钮事件
-        document.getElementById('confirmDeleteBtn').addEventListener('click', () => {
-            modal.hide();
-            resolve(true);
-        });
-        
-        // 绑定取消事件
-        document.getElementById('deleteConfirmModal').addEventListener('hidden.bs.modal', () => {
-            document.getElementById('deleteConfirmModal').remove();
-            resolve(false);
-        });
-        
-        modal.show();
-    });
-};
-
-// 全局导航函数（供HTML onclick调用）
-window.goToHome = Navigation.goToHome;
-window.goToNovelList = Navigation.goToNovelList;
-window.goToContinuationNovelList = Navigation.goToContinuationNovelList;
+/* ----------- 启动 ----------- */
+window.addEventListener("DOMContentLoaded", () => {
+    if (!location.hash) location.hash = "#/";
+    route();
+    setInterval(App.renderTaskDock, 3000);
+    App.adoptRunningTasks();
+});

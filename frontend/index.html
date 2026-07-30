@@ -1,283 +1,178 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>InkAI 智能小说创作系统</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <link href="styles.css" rel="stylesheet">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>InkAI · 智能小说创作系统</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet" />
+    <link href="styles.css" rel="stylesheet" />
 </head>
 <body>
-    <div id="app">
-        <!-- 导航栏 -->
-        <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
-            <div class="container">
-                <a class="navbar-brand" href="#">
-                    <i class="fas fa-feather-alt me-2"></i>
-                    InkAI 智能小说创作系统
-                </a>
-                <div class="navbar-nav ms-auto">
-                    <a class="nav-link" href="#" onclick="showNovelList()">
-                        <i class="fas fa-list me-1"></i>小说列表
-                    </a>
-                </div>
-            </div>
-        </nav>
 
-        <!-- 主内容区域 -->
-        <div class="container mt-4">
-            <!-- 欢迎页面 -->
-            <div id="welcome-page" class="page">
-                <div class="row justify-content-center">
-                    <div class="col-lg-8">
-                        <div class="text-center mb-5">
-                            <h1 class="display-4 text-primary mb-3">
-                                <i class="fas fa-feather-alt"></i>
-                                InkAI
-                            </h1>
-                            <p class="lead text-muted">基于大语言模型的智能小说创作助手</p>
-                            <p class="text-muted">支持从需求分析到章节生成的完整创作流程</p>
-                        </div>
-                        
-                        <div class="row g-4">
-                            <div class="col-md-6">
-                                <div class="card h-100 border-0 shadow-sm">
-                                    <div class="card-body text-center p-4">
-                                        <div class="feature-icon mb-3">
-                                            <i class="fas fa-plus-circle text-primary"></i>
-                                        </div>
-                                        <h5 class="card-title">开始创作新小说</h5>
-                                        <p class="card-text text-muted">从零开始，创建属于你的小说世界</p>
-                                        <button class="btn btn-primary" onclick="showCreateNovel()">
-                                            <i class="fas fa-play me-2"></i>开始创作
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                            
-                            <div class="col-md-6">
-                                <div class="card h-100 border-0 shadow-sm">
-                                    <div class="card-body text-center p-4">
-                                        <div class="feature-icon mb-3">
-                                            <i class="fas fa-edit text-success"></i>
-                                        </div>
-                                        <h5 class="card-title">续写现有小说</h5>
-                                        <p class="card-text text-muted">继续你的创作之旅，让故事更加精彩</p>
-                                        <button class="btn btn-success" onclick="showContinueNovel()">
-                                            <i class="fas fa-arrow-right me-2"></i>续写小说
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 创建新小说页面 -->
-            <div id="create-novel-page" class="page" style="display: none;">
-                <div class="row justify-content-center">
-                    <div class="col-lg-8">
-                        <div class="card border-0 shadow">
-                            <div class="card-header bg-primary text-white">
-                                <h4 class="mb-0">
-                                    <i class="fas fa-plus-circle me-2"></i>创建新小说
-                                </h4>
-                            </div>
-                            <div class="card-body p-4">
-                                <form id="create-novel-form">
-                                    <div class="mb-3">
-                                        <label for="novel-title" class="form-label">小说标题</label>
-                                        <input type="text" class="form-control" id="novel-title" 
-                                               placeholder="请输入小说标题" value="未命名小说">
-                                    </div>
-                                    
-                                    <div class="mb-4">
-                                        <label for="novel-requirements" class="form-label">创作需求</label>
-                                        <textarea class="form-control" id="novel-requirements" rows="4" 
-                                                  placeholder="请详细描述您的创作需求，例如：想写一部都市悬疑小说，主角是侦探，有推理元素"
-                                                  maxlength="2000"></textarea>
-                                        <div class="form-text">
-                                            <span id="requirements-count">0</span>/2000 字符
-                                        </div>
-                                    </div>
-                                    
-                                    <div class="d-flex gap-2">
-                                        <button type="submit" class="btn btn-primary">
-                                            <i class="fas fa-magic me-2"></i>开始创作
-                                        </button>
-                                        <button type="button" class="btn btn-secondary" onclick="showWelcome()">
-                                            <i class="fas fa-arrow-left me-2"></i>返回
-                                        </button>
-                                    </div>
-                                </form>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 续写小说页面 -->
-            <div id="continue-novel-page" class="page" style="display: none;">
-                <div class="row justify-content-center">
-                    <div class="col-lg-8">
-                        <div class="card border-0 shadow">
-                            <div class="card-header bg-success text-white">
-                                <h4 class="mb-0">
-                                    <i class="fas fa-edit me-2"></i>续写现有小说
-                                </h4>
-                            </div>
-                            <div class="card-body p-4">
-                                <div id="novel-selection">
-                                    <div class="mb-3">
-                                        <label class="form-label">选择要续写的小说</label>
-                                        <div id="novel-list" class="list-group">
-                                            <!-- 小说列表将在这里动态加载 -->
-                                        </div>
-                                    </div>
-                                </div>
-                                
-                                <div id="continuation-form" style="display: none;">
-                                    <div class="mb-3">
-                                        <label for="continuation-requirements" class="form-label">续写需求（可选）</label>
-                                        <textarea class="form-control" id="continuation-requirements" rows="3" 
-                                                  placeholder="请输入续写需求，例如：希望加快节奏，进入高潮部分"></textarea>
-                                    </div>
-                                    
-                                    <div class="d-flex gap-2">
-                                        <button type="button" class="btn btn-success" onclick="startContinuation()">
-                                            <i class="fas fa-play me-2"></i>开始续写
-                                        </button>
-                                        <button type="button" class="btn btn-secondary" onclick="resetNovelSelection()">
-                                            <i class="fas fa-arrow-left me-2"></i>重新选择
-                                        </button>
-                                    </div>
-                                </div>
-                                
-                                <div class="d-flex gap-2 mt-3">
-                                    <button type="button" class="btn btn-outline-secondary" onclick="showWelcome()">
-                                        <i class="fas fa-arrow-left me-2"></i>返回首页
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 小说列表页面 -->
-            <div id="novel-list-page" class="page" style="display: none;">
-                <div class="row">
-                    <div class="col-12">
-                        <div class="card border-0 shadow">
-                            <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
-                                <h4 class="mb-0">
-                                    <i class="fas fa-list me-2"></i>小说列表
-                                </h4>
-                                <button class="btn btn-light btn-sm" onclick="showWelcome()">
-                                    <i class="fas fa-arrow-left me-1"></i>返回首页
-                                </button>
-                            </div>
-                            <div class="card-body p-4">
-                                <div id="novels-container">
-                                    <!-- 小说列表将在这里动态加载 -->
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 创作流程页面 -->
-            <div id="creation-workflow-page" class="page" style="display: none;">
-                <div class="row">
-                    <div class="col-12">
-                        <div class="card border-0 shadow">
-                            <div class="card-header bg-primary text-white">
-                                <div class="d-flex justify-content-between align-items-center">
-                                    <h4 class="mb-0">
-                                        <i class="fas fa-cogs me-2"></i>创作流程
-                                    </h4>
-                                    <div class="workflow-nav-buttons">
-                                        <button type="button" class="btn btn-light btn-sm me-2" onclick="goToNovelList()">
-                                            <i class="fas fa-arrow-left me-1"></i>返回小说列表
-                                        </button>
-                                        <button type="button" class="btn btn-outline-light btn-sm" onclick="goToHome()">
-                                            <i class="fas fa-home me-1"></i>首页
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="card-body p-4">
-                                <div id="workflow-container">
-                                    <!-- 创作流程将在这里动态显示 -->
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 续写流程页面 -->
-            <div id="continuation-workflow-page" class="page" style="display: none;">
-                <div class="row">
-                    <div class="col-12">
-                        <div class="card border-0 shadow">
-                            <div class="card-header bg-success text-white">
-                                <div class="d-flex justify-content-between align-items-center">
-                                    <h4 class="mb-0">
-                                        <i class="fas fa-edit me-2"></i>续写流程
-                                    </h4>
-                                    <div class="workflow-nav-buttons">
-                                        <button type="button" class="btn btn-light btn-sm me-2" onclick="goToContinuationNovelList()">
-                                            <i class="fas fa-arrow-left me-1"></i>返回续写列表
-                                        </button>
-                                        <button type="button" class="btn btn-outline-light btn-sm" onclick="goToHome()">
-                                            <i class="fas fa-home me-1"></i>首页
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="card-body p-4">
-                                <div id="continuation-container">
-                                    <!-- 续写流程将在这里动态显示 -->
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 快速续写进度页面 -->
-            <div id="quick-continuation-progress-page" class="page" style="display: none;">
-                <div class="row">
-                    <div class="col-12">
-                        <div id="quick-continuation-progress-container">
-                            <!-- 快速续写进度将在这里动态显示 -->
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- 加载提示 -->
-        <div id="loading-overlay" class="loading-overlay" style="display: none;">
-            <div class="loading-content">
-                <div class="spinner-border text-primary mb-3" role="status">
-                    <span class="visually-hidden">加载中...</span>
-                </div>
-                <p class="text-muted">正在处理中，请稍候...</p>
-            </div>
-        </div>
-
-        <!-- 消息提示 -->
-        <div id="message-container" class="position-fixed top-0 end-0 p-3" style="z-index: 1050;">
-            <!-- 消息将在这里动态显示 -->
+<!-- ============================== 顶部导航 ============================== -->
+<nav class="navbar navbar-dark bg-primary shadow-sm">
+    <div class="container-fluid px-4">
+        <a class="navbar-brand" href="#/">
+            <i class="fas fa-feather-alt me-2"></i>
+            <span class="brand-text">InkAI</span>
+            <small class="brand-sub d-none d-md-inline ms-2">智能小说创作系统 · v2.2</small>
+        </a>
+        <div class="d-flex align-items-center gap-2">
+            <button class="btn btn-sm btn-light" onclick="App.openCreateModal()">
+                <i class="fas fa-plus me-1"></i>新建小说
+            </button>
+            <a class="btn btn-sm btn-outline-light" href="javascript:void(0)" onclick="App.go('#/')">
+                <i class="fas fa-house me-1"></i>主页
+            </a>
+            <a class="btn btn-sm btn-outline-light" href="javascript:void(0)" onclick="App.go('#/genres')" title="题材库管理">
+                <i class="fas fa-palette me-1"></i>题材库
+            </a>
+            <button class="btn btn-sm btn-outline-light" onclick="App.openTasksModal()" id="navTasksBtn"
+                    title="后台任务监控">
+                <i class="fas fa-tasks me-1"></i>任务
+                <span class="badge bg-warning text-dark ms-1" id="navTaskBadge" style="display:none">0</span>
+            </button>
         </div>
     </div>
+</nav>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="app.js"></script>
+<!-- ============================== 主体容器 ============================== -->
+<main class="main-container container-fluid px-4 py-4" id="mainContainer">
+    <!-- 路由渲染入口 -->
+</main>
+
+<!-- ============================== 创建小说 模态框 ============================== -->
+<div class="modal fade" id="createModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header bg-primary text-white">
+        <h5 class="modal-title"><i class="fas fa-magic me-2"></i>开始一本新小说</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <form id="createForm" onsubmit="event.preventDefault(); App.submitCreate()">
+          <div class="mb-3">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <label class="form-label mb-0">题材包 <span class="text-danger">*</span></label>
+                <div class="btn-group btn-group-sm">
+                    <button type="button" class="btn btn-outline-info" onclick="App.openGenerateGenreModalFromCreate()">
+                        <i class="fas fa-wand-magic-sparkles me-1"></i>LLM 造一个新题材
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary" onclick="App.go('#/genres')">
+                        <i class="fas fa-palette me-1"></i>题材库
+                    </button>
+                </div>
+            </div>
+            <div class="row g-3" id="genrePicker"></div>
+          </div>
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">小说标题 <span class="text-danger">*</span></label>
+              <input class="form-control" id="newTitle" placeholder="例：青冥录" required />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">主角姓名 <span class="text-danger">*</span></label>
+              <input class="form-control" id="newProtagonist" placeholder="例：顾长歌" required />
+            </div>
+          </div>
+          <div class="row g-3 mt-1">
+            <div class="col-md-6">
+              <label class="form-label">总章数</label>
+              <input class="form-control" type="number" id="newTotal" value="30" min="5" max="200" />
+            </div>
+            <div class="col-md-6 d-flex align-items-end">
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" id="newAlsoStoryline" checked />
+                <label class="form-check-label" for="newAlsoStoryline">
+                  同时调用 LLM 展开 storyline 骨架（推荐）
+                </label>
+              </div>
+            </div>
+          </div>
+          <div class="mb-2 mt-3">
+            <label class="form-label">附加创作要求（可选）</label>
+            <textarea class="form-control" id="newExtra" rows="3"
+                      placeholder="例：希望主角是双重身份；偏向冷峻写实；强调人性灰度"></textarea>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+        <button class="btn btn-primary" onclick="App.submitCreate()">
+          <i class="fas fa-rocket me-1"></i>开始创建
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================== LLM 生成题材 模态框 ============================== -->
+<div class="modal fade" id="genGenreModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header bg-info text-white">
+        <h5 class="modal-title"><i class="fas fa-wand-magic-sparkles me-2"></i>LLM 一键造题材</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label class="form-label">题材描述 <span class="text-danger">*</span></label>
+          <textarea class="form-control" id="genGenreDesc" rows="4"
+            placeholder="例：末世废土 × 赛博侦探 — 在生化崩溃后 50 年的霓虹废都里，主角是植入芯片的前警探，靠记忆碎片回放破案，主题反人性化"></textarea>
+          <div class="form-text">描述越具体，生成质量越高。可以包含：背景设定、力量体系、主角职业、风格、想要避免的东西等</div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">建议英文名（可选）</label>
+          <input class="form-control" id="genGenreName" placeholder="留空则 LLM 自己命名，如 cyber_wasteland" />
+          <div class="form-text">仅小写字母 / 数字 / 下划线，2-20 字符。同名时会自动加 _2 后缀</div>
+        </div>
+        <div class="alert alert-info small mb-0">
+          <i class="fas fa-info-circle me-1"></i>
+          生成需要 30-90 秒（调一次 LLM）。完成后会跳到编辑页让你预览修改后再决定是否落盘。
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+        <button class="btn btn-info" onclick="App.submitGenerateGenre()">
+          <i class="fas fa-rocket me-1"></i>开始生成
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================== 任务监控 模态框 ============================== -->
+<div class="modal fade" id="tasksModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header bg-secondary text-white">
+        <h5 class="modal-title"><i class="fas fa-tasks me-2"></i>后台任务监控</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="tasksModalBody"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================== 全屏 Loading ============================== -->
+<div id="loadingOverlay" class="loading-overlay" style="display:none">
+    <div class="loading-content">
+        <div class="spinner-border text-primary mb-3" role="status"></div>
+        <p class="text-muted" id="loadingMsg">处理中…</p>
+    </div>
+</div>
+
+<!-- ============================== Toast ============================== -->
+<div class="toast-container position-fixed top-0 end-0 p-3" id="toastContainer" style="z-index:1080"></div>
+
+<!-- ============================== 吸底任务进度面板 ============================== -->
+<div id="taskDock" class="task-dock" style="display:none">
+    <div class="task-dock-inner" id="taskDockInner"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
