@@ -507,6 +507,14 @@ curl http://localhost:5000/api/config
 
 ---
 
+## 反馈与建议
+
+Bug 报告、功能建议或任何其他反馈，欢迎通过邮箱联系：
+
+- **邮箱**：[iudm0358@agent.qq.com](mailto:iudm0358@agent.qq.com)
+
+---
+
 ## License
 
 MIT
